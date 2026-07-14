@@ -4,6 +4,10 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import type { SpecOperation, SpecResponse } from "./spec-loader.js";
 
 export type Verdict = {
+  /** Pre-computed pass/fail: false on any definitive contract violation. */
+  ok: boolean;
+  /** One-line human-readable summary of the verdict. */
+  summary: string;
   status: number;
   expectedStatuses: string[];
   statusExpected: boolean | "unknown";
@@ -15,6 +19,58 @@ export type Verdict = {
   latencyMs: number;
   redacted: boolean;
 };
+
+type VerdictCore = Omit<Verdict, "ok" | "summary">;
+
+/**
+ * A verdict fails only on a definitive contract violation: a schema
+ * mismatch, an unmet `--expect`, or an undocumented status. "unknown"
+ * checks never fail — scout cannot judge what the spec does not describe.
+ *
+ * An explicit `--expect` is a user assertion and takes precedence: if the
+ * user expected this status and got it, an undocumented status does not
+ * fail the verdict (the spec gap is surfaced separately, not as a failure).
+ */
+export function isVerdictOk(verdict: VerdictCore): boolean {
+  if (verdict.expectMatched === false) return false;
+  if (verdict.schemaValid === false) return false;
+  if (verdict.expectMatched === undefined && verdict.statusExpected === false) return false;
+  return true;
+}
+
+function describeStatusExpected(verdict: VerdictCore): string {
+  if (verdict.statusExpected === "unknown") return "undocumented";
+  if (verdict.statusExpected) return "expected";
+  // Status is not in the spec. If the user asserted it via --expect and it
+  // matched, that is a spec gap, not a failure.
+  return verdict.expectMatched === true ? "not-in-spec" : "UNEXPECTED";
+}
+
+/** Renders the compact one-line verdict summary. */
+export function summarizeVerdict(verdict: VerdictCore): string {
+  const parts: string[] = [];
+
+  if (verdict.expectMatched !== undefined) {
+    parts.push(verdict.expectMatched ? "expect: matched" : "expect: MISMATCH");
+  }
+
+  parts.push(`status: ${describeStatusExpected(verdict)}`);
+
+  if (verdict.schemaValid === "unknown") {
+    parts.push(`schema: n/a${verdict.schemaNote ? ` (${verdict.schemaNote})` : ""}`);
+  } else {
+    parts.push(verdict.schemaValid ? "schema: valid" : "schema: INVALID");
+  }
+
+  parts.push(`${verdict.latencyMs}ms`);
+
+  const glyph = isVerdictOk(verdict) ? "PASS" : "FAIL";
+  return `${glyph} · ${parts.join(" · ")}`;
+}
+
+function finalizeVerdict(core: VerdictCore): Verdict {
+  return { ...core, ok: isVerdictOk(core), summary: summarizeVerdict(core) };
+}
 
 let ajv30: Ajv | null = null;
 let ajv31: Ajv | null = null;
@@ -137,6 +193,20 @@ export function buildVerdict(options: {
   expect?: number;
   redacted: boolean;
 }): Verdict {
+  return finalizeVerdict(buildVerdictCore(options));
+}
+
+function buildVerdictCore(options: {
+  operation: SpecOperation | null;
+  specVersion: string;
+  status: number;
+  contentType?: string;
+  body: unknown;
+  bodyIsJson: boolean;
+  latencyMs: number;
+  expect?: number;
+  redacted: boolean;
+}): VerdictCore {
   const { operation, status } = options;
 
   const base = {

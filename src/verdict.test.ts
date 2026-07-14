@@ -59,6 +59,9 @@ describe("buildVerdict", () => {
     expect(verdict.schemaValid).toBe(true);
     expect(verdict.schemaErrors).toEqual([]);
     expect(verdict.contentTypeMatch).toBe(true);
+    expect(verdict.ok).toBe(true);
+    expect(verdict.summary).toContain("PASS");
+    expect(verdict.summary).toContain("schema: valid");
   });
 
   it("flags a response body that violates the schema", () => {
@@ -73,6 +76,23 @@ describe("buildVerdict", () => {
 
     expect(verdict.schemaValid).toBe(false);
     expect(verdict.schemaErrors.length).toBeGreaterThan(0);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.summary).toContain("FAIL");
+    expect(verdict.summary).toContain("schema: INVALID");
+  });
+
+  it("stays ok on unknown checks (nothing definitive to fail)", () => {
+    const verdict = buildVerdict({
+      ...base,
+      operation: null,
+      status: 200,
+      body: {},
+      bodyIsJson: true,
+    });
+
+    expect(verdict.ok).toBe(true);
+    expect(verdict.summary).toContain("PASS");
+    expect(verdict.summary).toContain("status: undocumented");
   });
 
   it("marks undocumented statuses as not expected", () => {
@@ -132,7 +152,26 @@ describe("buildVerdict", () => {
     expect(verdict.schemaValid).toBe(true);
   });
 
-  it("records expect matching", () => {
+  it("treats a matched --expect as PASS even for an undocumented status", () => {
+    // Operation documents only 200/404; user asserts 404 and gets 404.
+    const op = operation({ responses: { "200": { description: "ok" } } });
+    const verdict = buildVerdict({
+      ...base,
+      operation: op,
+      status: 404,
+      body: {},
+      bodyIsJson: false,
+      expect: 404,
+    });
+
+    expect(verdict.expectMatched).toBe(true);
+    expect(verdict.statusExpected).toBe(false);
+    expect(verdict.ok).toBe(true);
+    expect(verdict.summary).toContain("PASS");
+    expect(verdict.summary).toContain("status: not-in-spec");
+  });
+
+  it("records expect matching and fails the verdict on a mismatch", () => {
     const verdict = buildVerdict({
       ...base,
       operation: operation(),
@@ -144,5 +183,7 @@ describe("buildVerdict", () => {
     });
 
     expect(verdict.expectMatched).toBe(false);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.summary).toContain("expect: MISMATCH");
   });
 });

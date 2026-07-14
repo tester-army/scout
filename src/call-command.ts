@@ -1,3 +1,4 @@
+import { log } from "@clack/prompts";
 import { ScoutError } from "./errors.js";
 import { createExecutorContext, executeCall } from "./http-executor.js";
 import { parseHttpMethodArg } from "./spec-loader.js";
@@ -91,5 +92,45 @@ export async function runCallCommand(
     return;
   }
 
-  console.log(JSON.stringify(result, null, 2));
+  renderCallHuman(result);
+}
+
+/** Prints a concise, readable verdict instead of raw JSON in a TTY. */
+function renderCallHuman(result: {
+  operation: string | null;
+  request: { method: string; url: string };
+  response: { status: number; body: unknown };
+  verdict: {
+    ok: boolean;
+    summary: string;
+    expectedStatuses: string[];
+    schemaErrors: string[];
+  };
+}): void {
+  const { verdict } = result;
+  const line = verdict.ok ? log.success : log.error;
+
+  line(`${result.request.method} ${result.request.url}`);
+  log.message(verdict.summary);
+
+  if (result.operation) {
+    log.message(
+      `operation: ${result.operation}${
+        verdict.expectedStatuses.length > 0
+          ? ` · documented statuses: ${verdict.expectedStatuses.join(", ")}`
+          : ""
+      }`,
+    );
+  }
+
+  if (verdict.schemaErrors.length > 0) {
+    log.message(`schema errors:\n${verdict.schemaErrors.map((e) => `  - ${e}`).join("\n")}`);
+  }
+
+  const bodyText =
+    typeof result.response.body === "string"
+      ? result.response.body
+      : JSON.stringify(result.response.body, null, 2);
+  const preview = bodyText.length > 800 ? `${bodyText.slice(0, 800)}…` : bodyText;
+  log.message(`response body:\n${preview}`);
 }
