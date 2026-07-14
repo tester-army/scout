@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Broken Refs API", "version": "1.0.0" },
+  "paths": {
+    "/things": {
+      "get": {
+        "operationId": "listThings",
+        "summary": "List things",
+        "tags": ["things"],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DoesNotExist" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

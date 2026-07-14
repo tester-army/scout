@@ -33,20 +33,56 @@ function getNestedCommand(command: Command, commandName: string): Command {
 }
 
 describe("CLI help", () => {
-  it("documents runnable examples in root help", () => {
-    const help = renderHelp(createProgram());
+  it("documents the full command surface in root help", () => {
+    const program = createProgram();
+    const help = renderHelp(program);
 
-    expect(help).toContain("scout status --json");
-    expect(help).toContain("scout auth");
-    expect(help).toContain("scout auth signout");
     expect(help).toContain("Safe API exploration harness for coding agents.");
+    const commandNames = program.commands.map((command) => command.name());
+    for (const expected of [
+      "init",
+      "status",
+      "endpoints",
+      "schema",
+      "call",
+      "sweep",
+      "coverage",
+      "finding",
+      "report",
+      "agent",
+      "docs",
+      "auth",
+    ]) {
+      expect(commandNames).toContain(expected);
+    }
   });
 
-  it("documents status command", () => {
-    const help = renderHelp(getCommand("status"));
+  it("documents the init workflow", () => {
+    const help = renderHelp(getCommand("init"));
+    expect(help).toContain("--base-url <url>");
+    expect(help).toContain("--allow-mutations");
+    expect(help).toContain("Authorization: Bearer $API_TOKEN");
+  });
 
-    expect(help).toContain("show session and TesterArmy auth status");
-    expect(help).toContain("scout status --json");
+  it("documents call flags for exploration", () => {
+    const help = renderHelp(getCommand("call"));
+    expect(help).toContain("--path-param");
+    expect(help).toContain("--data-stdin");
+    expect(help).toContain("--no-auth");
+    expect(help).toContain("--expect");
+  });
+
+  it("documents sweep and report gates", () => {
+    expect(renderHelp(getCommand("sweep"))).toContain("--no-auth-probes");
+    const report = renderHelp(getCommand("report"));
+    expect(report).toContain("--ci");
+    expect(report).toContain("--severity-threshold");
+  });
+
+  it("documents finding subcommands", () => {
+    const finding = getCommand("finding");
+    expect(getNestedCommand(finding, "add").description()).toContain("record a finding");
+    expect(getNestedCommand(finding, "list").description()).toContain("list recorded findings");
   });
 
   it("documents auth flow including signout subcommand", () => {

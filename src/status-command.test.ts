@@ -44,6 +44,7 @@ describe("status command", () => {
       environmentApiKeySet: false,
       configApiKeySet: false,
       configPath: "/home/user/.config/testerarmy/config.json",
+      session: { active: false },
     });
   });
 

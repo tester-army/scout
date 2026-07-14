@@ -14,7 +14,9 @@ export type ScoutErrorCode =
   | "BUDGET_EXCEEDED"
   | "SPEC_INVALID"
   | "ENV_VAR_MISSING"
-  | "VALIDATION_ERROR";
+  | "VALIDATION_ERROR"
+  | "INVALID_JSON"
+  | "NOT_FOUND";
 
 /**
  * Error with an explicit machine-readable code and an agent-actionable hint.

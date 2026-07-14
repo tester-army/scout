@@ -36,11 +36,20 @@
     "release": "release-it"
   },
   "dependencies": {
+    "@apidevtools/swagger-parser": "12.1.0",
     "@clack/prompts": "^1.7.0",
-    "commander": "^15.0.0"
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "commander": "^15.0.0",
+    "picomatch": "4.0.5",
+    "swagger2openapi": "7.0.8",
+    "table": "6.9.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "@types/picomatch": "4.0.3",
+    "@types/swagger2openapi": "7.0.4",
     "oxfmt": "^0.59.0",
     "oxlint": "^1.74.0",
     "release-it": "^20.2.1",

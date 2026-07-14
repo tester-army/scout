@@ -1,0 +1,162 @@
+import type { CoverageSummary } from "./coverage.js";
+import {
+  FINDING_SEVERITIES,
+  severityRank,
+  type Finding,
+  type FindingSeverity,
+} from "./findings.js";
+
+export type ReportInput = {
+  title: string;
+  version: string;
+  specSource: string;
+  findings: Finding[];
+  coverage: CoverageSummary;
+  severityThreshold: FindingSeverity;
+};
+
+export type ReportJson = {
+  api: { title: string; version: string; specSource: string };
+  generatedAt: string;
+  summary: {
+    totalFindings: number;
+    bySeverity: Record<FindingSeverity, number>;
+    coveragePercent: number;
+    exercised: number;
+    totalOperations: number;
+    findingsAtOrAboveThreshold: number;
+    severityThreshold: FindingSeverity;
+    passed: boolean;
+  };
+  findings: Finding[];
+  coverage: CoverageSummary;
+};
+
+/** Counts findings by severity. */
+export function countBySeverity(findings: Finding[]): Record<FindingSeverity, number> {
+  const counts = Object.fromEntries(FINDING_SEVERITIES.map((s) => [s, 0])) as Record<
+    FindingSeverity,
+    number
+  >;
+  for (const finding of findings) {
+    counts[finding.severity] += 1;
+  }
+  return counts;
+}
+
+/** Number of findings at or above the given severity threshold. */
+export function countAtOrAboveThreshold(findings: Finding[], threshold: FindingSeverity): number {
+  const min = severityRank(threshold);
+  return findings.filter((finding) => severityRank(finding.severity) >= min).length;
+}
+
+/** Builds the machine-readable report payload. */
+export function buildReportJson(input: ReportInput): ReportJson {
+  const bySeverity = countBySeverity(input.findings);
+  const findingsAtOrAboveThreshold = countAtOrAboveThreshold(
+    input.findings,
+    input.severityThreshold,
+  );
+
+  return {
+    api: { title: input.title, version: input.version, specSource: input.specSource },
+    generatedAt: new Date().toISOString(),
+    summary: {
+      totalFindings: input.findings.length,
+      bySeverity,
+      coveragePercent: input.coverage.coveragePercent,
+      exercised: input.coverage.exercised,
+      totalOperations: input.coverage.totalOperations,
+      findingsAtOrAboveThreshold,
+      severityThreshold: input.severityThreshold,
+      passed: findingsAtOrAboveThreshold === 0,
+    },
+    findings: input.findings,
+    coverage: input.coverage,
+  };
+}
+
+function severityEmoji(severity: FindingSeverity): string {
+  switch (severity) {
+    case "critical":
+      return "🔴";
+    case "high":
+      return "🟠";
+    case "medium":
+      return "🟡";
+    case "low":
+      return "🔵";
+    default:
+      return "⚪";
+  }
+}
+
+/** Renders a Markdown report suitable for PR comments and step summaries. */
+export function buildReportMarkdown(input: ReportInput): string {
+  const report = buildReportJson(input);
+  const lines: string[] = [];
+
+  lines.push(`# Scout report: ${input.title} \`${input.version}\``);
+  lines.push("");
+  lines.push(
+    `**Findings:** ${report.summary.totalFindings} · **Coverage:** ${report.coverage.exercised}/${report.coverage.totalOperations} operations (${report.coverage.coveragePercent}%)`,
+  );
+  lines.push("");
+
+  const severityCells = FINDING_SEVERITIES.map(
+    (severity) => `${severityEmoji(severity)} ${severity}: ${report.summary.bySeverity[severity]}`,
+  ).join(" · ");
+  lines.push(severityCells);
+  lines.push("");
+
+  if (input.findings.length === 0) {
+    lines.push("No findings recorded. ✅");
+  } else {
+    const sorted = [...input.findings].sort(
+      (a, b) => severityRank(b.severity) - severityRank(a.severity),
+    );
+    lines.push("## Findings");
+    lines.push("");
+    for (const finding of sorted) {
+      lines.push(`### ${severityEmoji(finding.severity)} [${finding.severity}] ${finding.title}`);
+      lines.push("");
+      lines.push(`- **Endpoint:** \`${finding.endpoint}\``);
+      lines.push(`- **Category:** ${finding.category}`);
+      lines.push(`- **Source:** ${finding.source}`);
+      if (finding.description) {
+        lines.push(`- **Details:** ${finding.description}`);
+      }
+      if (finding.evidence?.length) {
+        lines.push(`- **Evidence:**`);
+        for (const line of finding.evidence) {
+          lines.push(`  - \`${line}\``);
+        }
+      }
+      if (finding.repro) {
+        lines.push(`- **Repro:** \`${finding.repro}\``);
+      }
+      lines.push("");
+    }
+  }
+
+  if (report.coverage.untouched.length > 0) {
+    lines.push("## Untested operations");
+    lines.push("");
+    for (const operation of report.coverage.untouched.slice(0, 50)) {
+      lines.push(`- \`${operation}\``);
+    }
+    if (report.coverage.untouched.length > 50) {
+      lines.push(`- …and ${report.coverage.untouched.length - 50} more`);
+    }
+    lines.push("");
+  }
+
+  lines.push("---");
+  lines.push(
+    `_${report.summary.passed ? "PASS" : "FAIL"} at severity threshold \`${input.severityThreshold}\` (${report.summary.findingsAtOrAboveThreshold} at/above)._`,
+  );
+  lines.push("");
+  lines.push("_Generated by [scout](https://github.com/tester-army/scout)._");
+
+  return lines.join("\n");
+}

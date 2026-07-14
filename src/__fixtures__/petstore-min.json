@@ -1,0 +1,106 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Mini Petstore", "version": "1.2.3" },
+  "servers": [{ "url": "https://api.example.com" }],
+  "components": {
+    "securitySchemes": {
+      "bearer": { "type": "http", "scheme": "bearer" }
+    },
+    "schemas": {
+      "Pet": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" },
+          "tag": { "type": "string" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/pets": {
+      "get": {
+        "operationId": "listPets",
+        "summary": "List all pets",
+        "tags": ["pets"],
+        "responses": {
+          "200": {
+            "description": "A list of pets",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Pet" } }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createPet",
+        "summary": "Create a pet",
+        "tags": ["pets"],
+        "security": [{ "bearer": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/Pet" } }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Pet" } }
+            }
+          }
+        }
+      }
+    },
+    "/pets/{petId}": {
+      "get": {
+        "operationId": "getPet",
+        "summary": "Get a pet by id",
+        "tags": ["pets"],
+        "parameters": [
+          {
+            "name": "petId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A pet",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Pet" } }
+            }
+          },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/admin/stats": {
+      "get": {
+        "operationId": "adminStats",
+        "summary": "Admin statistics",
+        "tags": ["admin"],
+        "security": [{ "bearer": [] }],
+        "responses": {
+          "200": {
+            "description": "Stats",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["count"],
+                  "properties": { "count": { "type": "integer" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
