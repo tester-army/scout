@@ -6,6 +6,7 @@ import {
   hashSpec,
   loadSpec,
   operationKey,
+  resolveServerBaseUrl,
   type OpenApiDocument,
 } from "./spec-loader.js";
 
@@ -64,6 +65,51 @@ describe("extractOperations", () => {
   it("returns an empty list for a spec with no paths", () => {
     const empty: OpenApiDocument = { openapi: "3.0.0", info: { title: "x", version: "1" } };
     expect(extractOperations(empty)).toEqual([]);
+  });
+});
+
+describe("resolveServerBaseUrl", () => {
+  const doc = (servers: OpenApiDocument["servers"]): OpenApiDocument => ({
+    openapi: "3.0.0",
+    info: { title: "x", version: "1" },
+    servers,
+  });
+
+  it("uses an absolute server URL directly", () => {
+    expect(resolveServerBaseUrl(doc([{ url: "https://api.example.com/api" }]), "spec.json")).toBe(
+      "https://api.example.com/api",
+    );
+  });
+
+  it("resolves a relative server URL against a spec fetched over HTTP", () => {
+    expect(
+      resolveServerBaseUrl(doc([{ url: "/api" }]), "https://tester.army/api/v1/openapi.json"),
+    ).toBe("https://tester.army/api");
+  });
+
+  it("substitutes server-variable defaults", () => {
+    const server = {
+      url: "https://{host}/api",
+      variables: { host: { default: "api.example.com" } },
+    };
+    const spec: OpenApiDocument = {
+      openapi: "3.0.0",
+      info: { title: "x", version: "1" },
+      servers: [server],
+    };
+    expect(resolveServerBaseUrl(spec, "spec.json")).toBe("https://api.example.com/api");
+  });
+
+  it("returns undefined for a relative URL with a local spec file", () => {
+    expect(resolveServerBaseUrl(doc([{ url: "/api" }]), "/local/spec.json")).toBeUndefined();
+  });
+
+  it("returns undefined when no servers are declared", () => {
+    expect(resolveServerBaseUrl(doc(undefined), "spec.json")).toBeUndefined();
+  });
+
+  it("returns undefined when variables cannot be resolved", () => {
+    expect(resolveServerBaseUrl(doc([{ url: "https://{host}/api" }]), "spec.json")).toBeUndefined();
   });
 });
 

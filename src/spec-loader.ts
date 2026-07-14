@@ -81,6 +81,8 @@ export type LoadedSpec = {
   converted: boolean;
   dereferenced: boolean;
   warnings: string[];
+  /** Absolute base URL derived from `servers[0]`, if resolvable. */
+  defaultBaseUrl?: string;
 };
 
 /** Returns a stable content hash for a parsed spec document. */
@@ -90,6 +92,43 @@ export function hashSpec(spec: unknown): string {
 
 function isUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
+}
+
+/**
+ * Resolves an absolute base URL from the spec's first server entry.
+ * Substitutes server-variable defaults, and resolves relative server URLs
+ * (e.g. `/api`) against the spec's source URL when the spec was fetched
+ * over HTTP. Returns undefined when nothing usable can be derived.
+ */
+export function resolveServerBaseUrl(spec: OpenApiDocument, source: string): string | undefined {
+  const server = spec.servers?.[0];
+  const rawUrl = server?.url?.trim();
+  if (!rawUrl) {
+    return undefined;
+  }
+
+  const variables = (server as { variables?: Record<string, { default?: unknown }> }).variables;
+  const substituted = rawUrl.replace(/\{([^}]+)\}/g, (match, name: string) => {
+    const fallback = variables?.[name]?.default;
+    return typeof fallback === "string" ? fallback : match;
+  });
+
+  if (/\{[^}]+\}/.test(substituted)) {
+    return undefined;
+  }
+
+  try {
+    if (isUrl(substituted)) {
+      return substituted.replace(/\/$/, "");
+    }
+    if (isUrl(source)) {
+      return new URL(substituted, source).toString().replace(/\/$/, "");
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
 }
 
 /**
@@ -204,6 +243,8 @@ export async function loadSpec(source: string): Promise<LoadedSpec> {
     }
   }
 
+  const defaultBaseUrl = resolveServerBaseUrl(finalSpec, source);
+
   return {
     spec: finalSpec,
     source,
@@ -214,6 +255,7 @@ export async function loadSpec(source: string): Promise<LoadedSpec> {
     converted,
     dereferenced,
     warnings,
+    ...(defaultBaseUrl ? { defaultBaseUrl } : {}),
   };
 }
 

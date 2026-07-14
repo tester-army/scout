@@ -27,6 +27,7 @@ type InitResult = {
   spec: { source: string; title: string; version: string; specVersion: string };
   operations: number;
   baseUrl: string;
+  baseUrlSource: "flag" | "config" | "spec" | "prompt";
   policy: { allowMutations: boolean };
   converted: boolean;
   dereferenced: boolean;
@@ -34,6 +35,21 @@ type InitResult = {
   gitignoreUpdated: boolean;
   hydratedOnly: boolean;
 };
+
+/** Determines where the resolved base URL came from, for reporting. */
+function resolveBaseUrlSource(input: {
+  flag?: string;
+  existing?: string;
+  specDefault?: string;
+  resolved: string;
+}): InitResult["baseUrlSource"] {
+  if (input.flag) return "flag";
+  if (input.existing) return "config";
+  if (input.specDefault && input.resolved === normalizeApiBaseUrl(input.specDefault)) {
+    return "spec";
+  }
+  return "prompt";
+}
 
 /** Parses repeated `--header 'Name: Value'` flags into a header map. */
 export function parseHeaderFlags(headers: string[] | undefined): Record<string, string> {
@@ -82,21 +98,35 @@ export async function runInitCommand(
   }
 
   let config: ScoutProjectConfig;
+  let loadedSpec;
   if (shouldHydrateOnly && existing) {
     config = existing.config;
+    loadedSpec = await loadSpec(config.spec);
   } else {
-    config = await buildConfig({
+    const specSource = await resolveSpecSource({
       specArg,
+      options,
+      existing: existing?.config,
+      interactive,
+    });
+    loadedSpec = await loadSpec(specSource);
+    config = await buildConfig({
+      specSource,
       options,
       interactive,
       existing: existing?.config,
       flagHeaders,
+      specDefaultBaseUrl: loadedSpec.defaultBaseUrl,
     });
   }
 
-  const specSource = await resolveSpecSource(config, options, interactive);
-  const loadedSpec = await loadSpec(specSource);
-  config.spec = specSource;
+  const specSource = config.spec;
+  const baseUrlSource = resolveBaseUrlSource({
+    flag: options.baseUrl,
+    existing: existing?.config.baseUrl,
+    specDefault: loadedSpec.defaultBaseUrl,
+    resolved: config.baseUrl,
+  });
 
   const { path: configPath, literalSecretHeaders } = writeProjectConfig(config, {
     config: options.config,
@@ -116,6 +146,7 @@ export async function runInitCommand(
     },
     operations: operations.length,
     baseUrl: config.baseUrl,
+    baseUrlSource,
     policy: { allowMutations: config.policy?.allowMutations ?? false },
     converted: loadedSpec.converted,
     dereferenced: loadedSpec.dereferenced,
@@ -156,21 +187,25 @@ export async function runInitCommand(
     `${loadedSpec.title} ${loadedSpec.version} — ${operations.length} operations cached.`,
   );
   log.info(`Config: ${configPath}`);
-  log.info(`Base URL: ${config.baseUrl}`);
+  log.info(
+    `Base URL: ${config.baseUrl}${baseUrlSource === "spec" ? " (from spec servers[0].url)" : ""}`,
+  );
   log.info(`Mutations: ${config.policy?.allowMutations ? "allowed" : "blocked (safe default)"}`);
   outro("Next: `scout sweep` for a baseline, or `scout endpoints` to explore.");
 }
 
 async function buildConfig(input: {
-  specArg?: string;
+  specSource: string;
   options: InitOptions;
   interactive: boolean;
   existing?: ScoutProjectConfig;
   flagHeaders: Record<string, string>;
+  specDefaultBaseUrl?: string;
 }): Promise<ScoutProjectConfig> {
-  const { options, interactive, existing, flagHeaders } = input;
+  const { options, interactive, existing, flagHeaders, specDefaultBaseUrl } = input;
 
-  let baseUrl = options.baseUrl ?? existing?.baseUrl;
+  // Precedence: --base-url flag > existing scout.json > spec servers[0].url > prompt.
+  let baseUrl = options.baseUrl ?? existing?.baseUrl ?? specDefaultBaseUrl;
   if (!baseUrl && interactive) {
     baseUrl = ensureNotCancelled(
       await text({
@@ -181,7 +216,7 @@ async function buildConfig(input: {
     );
   }
   if (!baseUrl) {
-    throw new ScoutError("Missing --base-url.", {
+    throw new ScoutError("Missing --base-url and the spec declares no server URL.", {
       code: "VALIDATION_ERROR",
       hint: "Pass --base-url <url>, e.g. `scout init openapi.json --base-url https://api.example.com`.",
     });
@@ -203,7 +238,7 @@ async function buildConfig(input: {
 
   return {
     $schema: "https://tester.army/scout.schema.json",
-    spec: input.specArg ?? existing?.spec ?? "",
+    spec: input.specSource,
     baseUrl: normalizeApiBaseUrl(baseUrl),
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
     ...(allowHosts.length > 0 ? { allowHosts } : {}),
@@ -211,17 +246,31 @@ async function buildConfig(input: {
   };
 }
 
-async function resolveSpecSource(
-  config: ScoutProjectConfig,
-  options: InitOptions,
-  interactive: boolean,
-): Promise<string> {
-  if (config.spec) {
-    return config.spec;
+async function resolveSpecSource(input: {
+  specArg?: string;
+  options: InitOptions;
+  existing?: ScoutProjectConfig;
+  interactive: boolean;
+}): Promise<string> {
+  const { specArg, options, existing, interactive } = input;
+
+  if (specArg) {
+    return specArg;
+  }
+
+  if (existing?.spec) {
+    return existing.spec;
   }
 
   if (options.discover) {
-    return discoverSpecUrl(config.baseUrl);
+    const baseUrl = options.baseUrl ?? existing?.baseUrl;
+    if (!baseUrl) {
+      throw new ScoutError("--discover requires --base-url to probe well-known spec paths.", {
+        code: "VALIDATION_ERROR",
+        hint: "Run `scout init --discover --base-url https://api.example.com`.",
+      });
+    }
+    return discoverSpecUrl(baseUrl);
   }
 
   if (interactive) {
