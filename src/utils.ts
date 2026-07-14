@@ -40,7 +40,7 @@ export function resolveApiKeyOrThrow(options: {
  *
  * Does NOT round-trip to the API — `scout auth` already validates on key
  * storage. The next real API call surfaces a friendly 401 if the key is
- * invalid. Only `report --upload` and telemetry ever need this.
+ * invalid. Only optional telemetry attribution ever needs this.
  */
 export async function resolveAuth(options: {
   apiKey?: string;

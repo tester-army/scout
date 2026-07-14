@@ -1,9 +1,8 @@
 import { buildCliRequestHeaders } from "./cli-analytics.js";
 
 /**
- * Client for the TesterArmy API (report upload, key validation, telemetry).
- * Requests to the user's target API never go through this module — see the
- * future http-executor.
+ * Client for the TesterArmy API (key validation, telemetry). Requests to the
+ * user's target API never go through this module — see the http-executor.
  */
 export type ApiClientOptions = {
   baseUrl: string;

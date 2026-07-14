@@ -33,19 +33,19 @@ npx @testerarmy/scout agent init
 
 Every command supports `--json`. Non-TTY output is JSON automatically.
 
-| Command                        | Purpose                                                                 |
-| ------------------------------ | ----------------------------------------------------------------------- |
-| `scout init [<spec>]`          | Generate `scout.json`, fetch/convert/dereference/cache the spec         |
-| `scout status`                 | Session summary + TesterArmy auth state (no network)                    |
-| `scout endpoints`              | Compact endpoint index (`--tag`/`--path`/`--method`/`--search`)         |
-| `scout schema <method> <path>` | Parameters, request body, response schemas for one operation            |
-| `scout call <method> <path>`   | Execute an instrumented request; returns response + verdict             |
-| `scout sweep`                  | Deterministic no-LLM pre-pass; auto-records findings                    |
-| `scout coverage`               | Operations exercised vs total; untouched list                           |
-| `scout finding add` / `list`   | Record and list findings                                                |
-| `scout report`                 | Compile findings + coverage; `--ci` exit codes; `--upload` (TesterArmy) |
-| `scout agent init`             | Install the scout skill + AGENTS.md hints                               |
-| `scout docs [topic]`           | Embedded agent-facing docs                                              |
+| Command                        | Purpose                                                         |
+| ------------------------------ | --------------------------------------------------------------- |
+| `scout init [<spec>]`          | Generate `scout.json`, fetch/convert/dereference/cache the spec |
+| `scout status`                 | Session summary + TesterArmy auth state (no network)            |
+| `scout endpoints`              | Compact endpoint index (`--tag`/`--path`/`--method`/`--search`) |
+| `scout schema <method> <path>` | Parameters, request body, response schemas for one operation    |
+| `scout call <method> <path>`   | Execute an instrumented request; returns response + verdict     |
+| `scout sweep`                  | Deterministic no-LLM pre-pass; auto-records findings            |
+| `scout coverage`               | Operations exercised vs total; untouched list                   |
+| `scout finding add` / `list`   | Record and list findings                                        |
+| `scout report`                 | Compile findings + coverage; `--ci` exit codes                  |
+| `scout agent init`             | Install the scout skill + AGENTS.md hints                       |
+| `scout docs [topic]`           | Embedded agent-facing docs                                      |
 
 ## Safety
 

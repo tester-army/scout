@@ -7,7 +7,8 @@ const CONFIG_FILE_MODE = 0o600;
 
 /**
  * Credential store shared with the `ta` CLI on purpose: a user who has ever
- * authed `ta` gets `scout report --upload` for free, and vice versa.
+ * authed `ta` is recognized by scout for optional usage attribution, and
+ * vice versa. Scout is fully functional without any credentials.
  */
 export interface TesterArmyCliConfig {
   apiKey?: string;

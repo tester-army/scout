@@ -337,7 +337,6 @@ Examples:
     .option("--json-file <file>", "write JSON report to a file")
     .option("--ci", "exit non-zero when findings at/above the threshold exist")
     .option("--severity-threshold <severity>", "CI gate threshold (default: high)")
-    .option("--upload", "upload the report to TesterArmy (requires auth)")
     .option("--json", "output as JSON")
     .addHelpText(
       "after",
@@ -394,7 +393,7 @@ Examples:
 
   const authCommand = program
     .command("auth")
-    .description("save Tester Army API key to local config (only needed for report --upload)")
+    .description("save Tester Army API key to local config (optional; enables usage attribution)")
     .option("--api-key <key>", "Tester Army API key")
     .option("--base-url <url>", "Tester Army API base URL")
     .addHelpText(

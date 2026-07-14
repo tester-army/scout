@@ -9,7 +9,6 @@ export const cliAnalyticsEvents = {
   commandCompleted: "scout_command_completed",
   init: "scout_init",
   sweepCompleted: "scout_sweep_completed",
-  reportUploaded: "scout_report_uploaded",
   auth: "scout_auth",
 } as const;
 

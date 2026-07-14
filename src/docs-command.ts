@@ -101,9 +101,12 @@ const DOCS_TOPICS: DocsTopic[] = [
   },
   {
     name: "auth",
-    summary: "Optional TesterArmy key — only needed for report --upload.",
+    summary: "Optional TesterArmy key. Scout is fully functional without it.",
     commands: ["scout status --json", "scout auth", "scout auth signout"],
-    notes: ["Shares credentials with the `ta` CLI (~/.config/testerarmy/config.json)."],
+    notes: [
+      "Shares credentials with the `ta` CLI (~/.config/testerarmy/config.json).",
+      "Only enables anonymous usage attribution; unauthenticated runs send nothing.",
+    ],
   },
   {
     name: "ci",

@@ -124,9 +124,7 @@ export async function runStatusCommand(options: StatusCommandOptions = {}): Prom
   printLine(`Config file: ${result.configPath}`);
 
   if (!result.authenticated) {
-    printLine(
-      "TesterArmy auth is only needed for `scout report --upload`. Run `scout auth` to link.",
-    );
+    printLine("TesterArmy auth is optional. Scout is fully functional unauthenticated.");
   }
 
   await captureStatusTelemetry();

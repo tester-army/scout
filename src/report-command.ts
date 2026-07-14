@@ -12,7 +12,6 @@ export type ReportOptions = {
   jsonFile?: string;
   ci?: boolean;
   severityThreshold?: string;
-  upload?: boolean;
 };
 
 /** Compiles findings + coverage into a report with CI-friendly exit codes. */
@@ -43,11 +42,6 @@ export async function runReportCommand(options: ReportOptions): Promise<void> {
   }
   if (options.jsonFile) {
     writeFileSync(options.jsonFile, `${JSON.stringify(reportJson, null, 2)}\n`);
-  }
-
-  if (options.upload) {
-    // Fast-follow: uploadReportViaApi once the ingest endpoint ships.
-    reportJson.summary = { ...reportJson.summary };
   }
 
   if (options.ci && !reportJson.summary.passed) {
