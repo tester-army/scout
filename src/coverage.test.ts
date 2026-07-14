@@ -10,6 +10,7 @@ function op(method: SpecOperation["method"], path: string): SpecOperation {
     tags: [],
     deprecated: false,
     secured: false,
+    authParameters: [],
     parameters: [],
     responses: {},
   };

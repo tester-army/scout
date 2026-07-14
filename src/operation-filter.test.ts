@@ -9,6 +9,7 @@ function op(overrides: Partial<SpecOperation>): SpecOperation {
     tags: [],
     deprecated: false,
     secured: false,
+    authParameters: [],
     parameters: [],
     responses: {},
     ...overrides,

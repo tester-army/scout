@@ -37,7 +37,7 @@ describe("CLI help", () => {
     const program = createProgram();
     const help = renderHelp(program);
 
-    expect(help).toContain("Safe API exploration harness for coding agents.");
+    expect(help).toContain("Guardrailed API testing harness for coding agents.");
     const commandNames = program.commands.map((command) => command.name());
     for (const expected of [
       "init",
@@ -68,8 +68,27 @@ describe("CLI help", () => {
     const help = renderHelp(getCommand("call"));
     expect(help).toContain("--path-param");
     expect(help).toContain("--data-stdin");
+    expect(help).toContain("--raw-data <text>");
+    expect(help).toContain("--raw-data-stdin");
     expect(help).toContain("--no-auth");
+    expect(help).toContain("--invalid-auth");
     expect(help).toContain("--expect");
+  });
+
+  it.each([
+    ["--data", "{}", "--data-stdin"],
+    ["--data", "{}", "--raw-data", "{"],
+    ["--data-stdin", "--raw-data-stdin"],
+    ["--raw-data", "x", "--raw-data-stdin"],
+    ["--no-auth", "--invalid-auth"],
+  ])("rejects conflicting call options: %s", async (...flags) => {
+    const command = getCommand("call");
+    command.exitOverride();
+    command.configureOutput({ writeErr: () => {} });
+
+    await expect(
+      command.parseAsync(["GET", "/pets", ...flags], { from: "user" }),
+    ).rejects.toMatchObject({ code: "commander.conflictingOption" });
   });
 
   it("documents sweep and report gates", () => {

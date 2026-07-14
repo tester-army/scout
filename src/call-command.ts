@@ -10,12 +10,50 @@ export type CallOptions = {
   query?: string[];
   data?: string;
   dataStdin?: boolean;
+  rawData?: string;
+  rawDataStdin?: boolean;
   header?: string[];
   expect?: number;
   /** Commander sets this to false when `--no-auth` is passed (default true). */
   auth?: boolean;
+  invalidAuth?: boolean;
   config?: string;
 };
+
+/** Reads all stdin as UTF-8 text without trimming or parsing it. */
+async function readRawStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf-8");
+}
+
+/** Rejects mutually exclusive call body and authentication modes. */
+function assertCompatibleCallOptions(options: CallOptions): void {
+  if (options.data !== undefined && options.dataStdin) {
+    throw new ScoutError("--data cannot be used with --data-stdin.", {
+      code: "VALIDATION_ERROR",
+    });
+  }
+  const hasJsonBody = options.data !== undefined || options.dataStdin === true;
+  const hasRawBody = options.rawData !== undefined || options.rawDataStdin === true;
+  if (hasJsonBody && hasRawBody) {
+    throw new ScoutError("Raw body flags cannot be used with --data or --data-stdin.", {
+      code: "VALIDATION_ERROR",
+    });
+  }
+  if (options.rawData !== undefined && options.rawDataStdin) {
+    throw new ScoutError("--raw-data cannot be used with --raw-data-stdin.", {
+      code: "VALIDATION_ERROR",
+    });
+  }
+  if (options.auth === false && options.invalidAuth) {
+    throw new ScoutError("--no-auth cannot be used with --invalid-auth.", {
+      code: "VALIDATION_ERROR",
+    });
+  }
+}
 
 /** Parses repeated `k=v` flags into a record. */
 export function parseKeyValueFlags(
@@ -58,9 +96,11 @@ export async function runCallCommand(
   path: string,
   options: CallOptions,
 ): Promise<void> {
+  assertCompatibleCallOptions(options);
   const httpMethod = parseHttpMethodArg(method);
 
   let body: unknown;
+  let rawBody: string | undefined;
   if (options.dataStdin) {
     body = await readJsonStdin("request body");
   } else if (options.data !== undefined) {
@@ -72,6 +112,10 @@ export async function runCallCommand(
         hint: "Pass valid JSON, or use --data-stdin to pipe a larger payload.",
       });
     }
+  } else if (options.rawDataStdin) {
+    rawBody = await readRawStdin();
+  } else if (options.rawData !== undefined) {
+    rawBody = options.rawData;
   }
 
   const context = createExecutorContext({ config: options.config });
@@ -83,7 +127,9 @@ export async function runCallCommand(
     query: parseKeyValueFlags(options.query, "--query"),
     headers: parseHeaderKvFlags(options.header),
     ...(body !== undefined ? { body } : {}),
+    ...(rawBody !== undefined ? { rawBody } : {}),
     ...(options.auth === false ? { noAuth: true } : {}),
+    ...(options.invalidAuth ? { invalidAuth: true } : {}),
     ...(options.expect !== undefined ? { expect: options.expect } : {}),
   });
 

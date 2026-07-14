@@ -2,7 +2,7 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { cancel, isCancel, log } from "@clack/prompts";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { runAgentInitCommand, type AgentInitOptions } from "./agent-command.js";
 import { runAuthCommand, runSignoutCommand, type AuthOptions } from "./auth-command.js";
 import { runCallCommand, type CallOptions } from "./call-command.js";
@@ -108,7 +108,7 @@ export function createProgram(): Command {
   program
     .name("scout")
     .description(
-      "Safe API exploration harness for coding agents. Scout parses your OpenAPI spec, executes instrumented requests with guardrails, and compiles structured findings — send a scout ahead of the army.",
+      "Guardrailed API testing harness for coding agents. Scout parses your OpenAPI spec, executes instrumented requests, and compiles structured findings — send a scout ahead of the army.",
     )
     .version(getCliVersion())
     .hook("preAction", (_thisCommand, actionCommand) => {
@@ -119,9 +119,9 @@ export function createProgram(): Command {
       `
 Examples:
   scout init https://api.example.com/openapi.json --base-url https://api.example.com
-  scout sweep --json
   scout endpoints --tag users --json
   scout schema GET /users/{id} --json
+  scout sweep --tag users --max-requests 25 --json
   scout call GET /users --query limit=10 --json
   scout coverage --json
   scout report --ci --md report.md
@@ -218,11 +218,43 @@ Examples:
     .argument("<path>", "operation path, e.g. /users/{id}")
     .option("--path-param <kv>", "path parameter key=value", collect, [])
     .option("--query <kv>", "query parameter key=value", collect, [])
-    .option("--data <json>", "JSON request body")
-    .option("--data-stdin", "read JSON request body from stdin")
+    .addOption(
+      new Option("--data <json>", "JSON request body").conflicts([
+        "dataStdin",
+        "rawData",
+        "rawDataStdin",
+      ]),
+    )
+    .addOption(
+      new Option("--data-stdin", "read JSON request body from stdin").conflicts([
+        "data",
+        "rawData",
+        "rawDataStdin",
+      ]),
+    )
+    .addOption(
+      new Option("--raw-data <text>", "raw request body sent verbatim").conflicts([
+        "data",
+        "dataStdin",
+        "rawDataStdin",
+      ]),
+    )
+    .addOption(
+      new Option("--raw-data-stdin", "read raw request body from stdin").conflicts([
+        "data",
+        "dataStdin",
+        "rawData",
+      ]),
+    )
     .option("--header <kv>", "extra header Name:Value", collect, [])
     .option("--expect <status>", "expected HTTP status", parseIntOption("--expect"))
     .option("--no-auth", "drop secret-like headers to probe auth boundaries")
+    .addOption(
+      new Option(
+        "--invalid-auth",
+        "replace credentials with deterministic invalid values",
+      ).conflicts("auth"),
+    )
     .option("--config <path>", "path to scout.json")
     .option("--json", "output as JSON")
     .addHelpText(
@@ -233,7 +265,9 @@ Examples:
   scout call GET /users/{id} --path-param id=123 --json
   scout call GET /users --query limit=10 --expect 200 --json
   echo '{"name":"Ada"}' | scout call POST /users --data-stdin --json
+  scout call POST /users --raw-data '{"malformed":' --json
   scout call GET /admin --no-auth --json
+  scout call GET /admin --invalid-auth --json
 `,
     )
     .action(async (method: string, path: string, options: CallOptions) => {

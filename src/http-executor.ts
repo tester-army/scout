@@ -7,7 +7,7 @@ import {
   type ResolvedPolicy,
   type ScoutProjectConfig,
 } from "./project-config.js";
-import { redactSecretsOnly, redactUrl } from "./redaction.js";
+import { redactJsonSecrets, redactSecretsOnly, redactUrl } from "./redaction.js";
 import {
   appendRequestRecord,
   incrementRequestCount,
@@ -26,7 +26,11 @@ import {
 import { buildVerdict, type Verdict } from "./verdict.js";
 
 const ENV_REF_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
-const SECRETISH_HEADER_RE = /auth|token|key|secret|cookie|session|password/i;
+const SECRETISH_HEADER_RE =
+  /(^|[-_])(authorization|api[-_]?key|key|token|secret|cookie|session|password|auth)([-_]|$)/i;
+const SECRETISH_QUERY_KEY_RE =
+  /(^|[-_])(api[-_]?key|key|token|secret|password|session|auth|signature|sig)([-_]|$)/i;
+const INVALID_CREDENTIAL = "scout-invalid-credential";
 const MAX_STORED_BODY_LENGTH = 4000;
 
 export type ExecutorContext = {
@@ -44,7 +48,9 @@ export type CallRequest = {
   query?: Record<string, string>;
   headers?: Record<string, string>;
   body?: unknown;
+  rawBody?: string;
   noAuth?: boolean;
+  invalidAuth?: boolean;
   expect?: number;
   source: "call" | "sweep";
   timeoutMs?: number;
@@ -230,6 +236,77 @@ function redactRecordValue(value: string, secrets: string[]): string {
   return redactSecretsOnly(value, secrets);
 }
 
+/** Returns a deterministic invalid credential while retaining the declared auth scheme. */
+function invalidCredentialValue(value: string, declaredScheme?: string): string {
+  if (declaredScheme) return `${declaredScheme} ${INVALID_CREDENTIAL}`;
+  const scheme = /^(\s*(?:Bearer|Basic|Digest|Negotiate)\s+)/i.exec(value)?.[1];
+  return scheme ? `${scheme}${INVALID_CREDENTIAL}` : INVALID_CREDENTIAL;
+}
+
+/** Collects credential header values and scheme payloads for output redaction. */
+function collectCredentialSecrets(value: string, secrets: string[]): void {
+  secrets.push(value);
+  const credential = /^\s*(?:Bearer|Basic)\s+(.+?)\s*$/i.exec(value)?.[1];
+  if (credential) secrets.push(credential);
+}
+
+/** Adds currently available env-reference values without requiring them to exist. */
+function collectAvailableEnvSecrets(template: string, secrets: string[]): void {
+  for (const match of template.matchAll(ENV_REF_RE)) {
+    const name = match[1] ?? match[2];
+    const value = name ? process.env[name] : undefined;
+    if (value) secrets.push(value);
+  }
+}
+
+type CookiePair = { name: string; value: string };
+
+/** Parses a Cookie header into name/value pairs. */
+function parseCookieHeader(value: string): CookiePair[] {
+  return value
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const separator = part.indexOf("=");
+      return separator === -1
+        ? { name: part, value: "" }
+        : { name: part.slice(0, separator).trim(), value: part.slice(separator + 1).trim() };
+    });
+}
+
+/** Serializes Cookie header pairs without changing their names or order. */
+function serializeCookieHeader(pairs: CookiePair[]): string {
+  return pairs.map(({ name, value }) => `${name}=${value}`).join("; ");
+}
+
+/** Removes or replaces auth cookies while preserving unrelated cookie pairs. */
+function transformCookieHeader(
+  value: string,
+  authCookieNames: string[],
+  mode: "remove" | "invalidate",
+): string | undefined {
+  const pairs = parseCookieHeader(value);
+  const targetNames = new Set(
+    authCookieNames.length > 0 ? authCookieNames : pairs.map((pair) => pair.name),
+  );
+  const transformed = pairs
+    .filter((pair) => mode !== "remove" || !targetNames.has(pair.name))
+    .map((pair) =>
+      mode === "invalidate" && targetNames.has(pair.name)
+        ? { ...pair, value: INVALID_CREDENTIAL }
+        : pair,
+    );
+  return transformed.length > 0 ? serializeCookieHeader(transformed) : undefined;
+}
+
+/** Adds individual cookie values to the redaction set. */
+function collectCookieSecrets(value: string, secrets: string[]): void {
+  for (const pair of parseCookieHeader(value)) {
+    if (pair.value && pair.value !== INVALID_CREDENTIAL) secrets.push(pair.value);
+  }
+}
+
 function truncateBody(body: string): string {
   return body.length > MAX_STORED_BODY_LENGTH
     ? `${body.slice(0, MAX_STORED_BODY_LENGTH)}…[truncated]`
@@ -245,8 +322,55 @@ export async function executeCall(
   request: CallRequest,
   rateLimiter?: RateLimiter,
 ): Promise<CallResult> {
+  if (request.noAuth && request.invalidAuth) {
+    throw new ScoutError("--no-auth cannot be used with --invalid-auth.", {
+      code: "VALIDATION_ERROR",
+    });
+  }
+  if (request.body !== undefined && request.rawBody !== undefined) {
+    throw new ScoutError("JSON and raw request bodies cannot be used together.", {
+      code: "VALIDATION_ERROR",
+    });
+  }
+
   const match = matchOperation(context.operations, request.method, request.path);
   const operation = match?.operation ?? null;
+  const authHeaderNames = new Set(
+    operation?.authParameters
+      .filter((parameter) => parameter.in === "header")
+      .map((parameter) => parameter.name.toLowerCase()) ?? [],
+  );
+  const authHeaderSchemes = new Map(
+    operation?.authParameters
+      .filter((parameter) => parameter.in === "header" && parameter.scheme)
+      .map((parameter) => [parameter.name.toLowerCase(), parameter.scheme as string]) ?? [],
+  );
+  const authQueryNames = new Set(
+    operation?.authParameters
+      .filter((parameter) => parameter.in === "query")
+      .map((parameter) => parameter.name) ?? [],
+  );
+  const authCookieNames =
+    operation?.authParameters
+      .filter((parameter) => parameter.in === "cookie")
+      .map((parameter) => parameter.name) ?? [];
+  const hasDeclaredAuthParameters = (operation?.authParameters.length ?? 0) > 0;
+  /** Matches a spec-declared credential header. */
+  const isDeclaredCredentialHeader = (name: string) =>
+    authHeaderNames.has(name.toLowerCase()) ||
+    (name.toLowerCase() === "cookie" && authCookieNames.length > 0);
+  /** Matches a credential header for probe mutation. */
+  const isProbeCredentialHeader = (name: string) =>
+    hasDeclaredAuthParameters ? isDeclaredCredentialHeader(name) : SECRETISH_HEADER_RE.test(name);
+  /** Matches a credential header that must be redacted. */
+  const isSensitiveHeader = (name: string) =>
+    authHeaderNames.has(name.toLowerCase()) || SECRETISH_HEADER_RE.test(name);
+  /** Matches a credential query parameter for probe mutation. */
+  const isProbeCredentialQuery = (name: string) =>
+    hasDeclaredAuthParameters ? authQueryNames.has(name) : SECRETISH_QUERY_KEY_RE.test(name);
+  /** Matches a credential query parameter that must be redacted. */
+  const isSensitiveQuery = (name: string) =>
+    authQueryNames.has(name) || SECRETISH_QUERY_KEY_RE.test(name);
 
   const pathParams = { ...(match?.extractedPathParams ?? {}), ...(request.pathParams ?? {}) };
   const templatePath = operation && match ? operation.path : request.path;
@@ -254,27 +378,135 @@ export async function executeCall(
 
   const baseUrl = context.config.baseUrl.replace(/\/$/, "");
   const url = new URL(`${baseUrl}${concretePath.startsWith("/") ? "" : "/"}${concretePath}`);
+  const secrets: string[] = [];
+  let hasCredentialTarget = false;
   for (const [key, value] of Object.entries(request.query ?? {})) {
-    url.searchParams.append(key, value);
+    const credentialLike = isProbeCredentialQuery(key);
+    const syntheticCredential = request.invalidAuth === true && credentialLike;
+    if (credentialLike) hasCredentialTarget = true;
+    if (request.noAuth && credentialLike) continue;
+    const effectiveValue = syntheticCredential ? INVALID_CREDENTIAL : value;
+    url.searchParams.append(key, effectiveValue);
+    if (isSensitiveQuery(key)) secrets.push(value);
+  }
+  for (const name of authQueryNames) {
+    hasCredentialTarget = true;
+    if (request.invalidAuth && !url.searchParams.has(name)) {
+      url.searchParams.append(name, INVALID_CREDENTIAL);
+    }
   }
 
   assertHostAllowed(url, context.config);
   assertMethodAllowed(request.method, context.policy);
   assertBudgetAvailable(context.cwd, context.policy);
 
-  const secrets: string[] = [];
   const headers: Record<string, string> = {};
+  const syntheticCredentialHeaders = new Set<string>();
   for (const [name, template] of Object.entries(context.config.headers ?? {})) {
-    if (request.noAuth && SECRETISH_HEADER_RE.test(name)) continue;
-    const resolved = resolveEnvRefs(template);
+    let effectiveTemplate = template;
+    if (isSensitiveHeader(name)) {
+      collectAvailableEnvSecrets(template, secrets);
+      if (name.toLowerCase() === "cookie") {
+        collectCookieSecrets(template, secrets);
+      } else {
+        collectCredentialSecrets(template, secrets);
+      }
+    }
+    if (isProbeCredentialHeader(name)) {
+      hasCredentialTarget = true;
+      if (name.toLowerCase() === "cookie") {
+        if (request.noAuth) {
+          const transformed = transformCookieHeader(template, authCookieNames, "remove");
+          if (transformed === undefined) continue;
+          effectiveTemplate = transformed;
+        } else if (request.invalidAuth) {
+          effectiveTemplate = transformCookieHeader(template, authCookieNames, "invalidate") ?? "";
+          syntheticCredentialHeaders.add(name.toLowerCase());
+        }
+      } else if (request.noAuth) {
+        continue;
+      } else if (request.invalidAuth) {
+        headers[name] = invalidCredentialValue(template, authHeaderSchemes.get(name.toLowerCase()));
+        syntheticCredentialHeaders.add(name.toLowerCase());
+        continue;
+      }
+    }
+    const resolved = resolveEnvRefs(effectiveTemplate);
     headers[name] = resolved.value;
     secrets.push(...resolved.secrets);
   }
   for (const [name, value] of Object.entries(request.headers ?? {})) {
-    headers[name] = value;
+    let effectiveValue = value;
+    if (name.toLowerCase() === "cookie") {
+      collectCookieSecrets(value, secrets);
+    } else if (isSensitiveHeader(name)) {
+      collectCredentialSecrets(value, secrets);
+    }
+    if (isProbeCredentialHeader(name)) {
+      hasCredentialTarget = true;
+      if (name.toLowerCase() === "cookie") {
+        if (request.noAuth) {
+          const transformed = transformCookieHeader(value, authCookieNames, "remove");
+          if (transformed === undefined) continue;
+          effectiveValue = transformed;
+        } else if (request.invalidAuth) {
+          effectiveValue = transformCookieHeader(value, authCookieNames, "invalidate") ?? "";
+          syntheticCredentialHeaders.add(name.toLowerCase());
+        }
+      } else if (request.noAuth) {
+        continue;
+      } else if (request.invalidAuth) {
+        headers[name] = invalidCredentialValue(value, authHeaderSchemes.get(name.toLowerCase()));
+        syntheticCredentialHeaders.add(name.toLowerCase());
+        continue;
+      }
+    }
+    headers[name] = effectiveValue;
   }
 
-  const hasBody = request.body !== undefined;
+  for (const name of authHeaderNames) {
+    hasCredentialTarget = true;
+    const existingName = Object.keys(headers).find((header) => header.toLowerCase() === name);
+    if (request.invalidAuth && !existingName) {
+      const headerName =
+        operation?.authParameters.find(
+          (parameter) => parameter.in === "header" && parameter.name.toLowerCase() === name,
+        )?.name ?? name;
+      headers[headerName] =
+        name === "authorization"
+          ? `${authHeaderSchemes.get(name) ?? "Bearer"} ${INVALID_CREDENTIAL}`
+          : INVALID_CREDENTIAL;
+      syntheticCredentialHeaders.add(name);
+    }
+  }
+  if (authCookieNames.length > 0) {
+    hasCredentialTarget = true;
+    const cookieHeader = Object.keys(headers).find((header) => header.toLowerCase() === "cookie");
+    if (request.invalidAuth) {
+      const existingPairs = cookieHeader ? parseCookieHeader(headers[cookieHeader] ?? "") : [];
+      const missingPairs = authCookieNames
+        .filter((name) => !existingPairs.some((pair) => pair.name === name))
+        .map((name) => ({ name, value: INVALID_CREDENTIAL }));
+      if (missingPairs.length > 0) {
+        const headerName = cookieHeader ?? "Cookie";
+        headers[headerName] = serializeCookieHeader([...existingPairs, ...missingPairs]);
+        syntheticCredentialHeaders.add("cookie");
+      }
+    }
+  }
+
+  if (request.invalidAuth && !hasCredentialTarget) {
+    headers.Authorization = `Bearer ${INVALID_CREDENTIAL}`;
+    syntheticCredentialHeaders.add("authorization");
+  }
+
+  const hasBody = request.body !== undefined || request.rawBody !== undefined;
+  let serializedBody: string | undefined;
+  if (request.rawBody !== undefined) {
+    serializedBody = request.rawBody;
+  } else if (request.body !== undefined) {
+    serializedBody = JSON.stringify(request.body);
+  }
   if (hasBody && !Object.keys(headers).some((h) => h.toLowerCase() === "content-type")) {
     headers["Content-Type"] = "application/json";
   }
@@ -289,7 +521,7 @@ export async function executeCall(
     response = await fetch(url, {
       method: request.method.toUpperCase(),
       headers,
-      body: hasBody ? JSON.stringify(request.body) : undefined,
+      body: serializedBody,
       signal: AbortSignal.timeout(request.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
       redirect: "manual",
     });
@@ -332,9 +564,14 @@ export async function executeCall(
   const redactedHeaders = Object.fromEntries(
     Object.entries(headers).map(([name, value]) => [
       name,
-      SECRETISH_HEADER_RE.test(name) ? "[redacted]" : redactRecordValue(value, secrets),
+      isSensitiveHeader(name) &&
+      (name.toLowerCase() === "cookie" || !syntheticCredentialHeaders.has(name.toLowerCase()))
+        ? "[redacted]"
+        : redactRecordValue(value, secrets),
     ]),
   );
+
+  const redactedUrl = redactUrl(url.toString(), secrets, authQueryNames);
 
   const record: RequestRecord = {
     id: requestId,
@@ -342,13 +579,13 @@ export async function executeCall(
     source: request.source,
     operation: operation ? operationKey(operation) : null,
     method: request.method.toUpperCase(),
-    url: redactUrl(url.toString(), secrets),
+    url: redactedUrl,
     status: response.status,
     latencyMs,
     schemaValid: verdict.schemaValid,
     requestHeaders: redactedHeaders,
     ...(hasBody
-      ? { requestBody: truncateBody(redactRecordValue(JSON.stringify(request.body), secrets)) }
+      ? { requestBody: truncateBody(redactRecordValue(serializedBody ?? "", secrets)) }
       : {}),
     responseBody: truncateBody(redactRecordValue(rawBody, secrets)),
     ...(contentType ? { responseContentType: contentType } : {}),
@@ -362,14 +599,23 @@ export async function executeCall(
     operation: operation ? operationKey(operation) : null,
     request: {
       method: request.method.toUpperCase(),
-      url: redactUrl(url.toString(), secrets),
+      url: redactedUrl,
       headers: redactedHeaders,
-      ...(hasBody ? { body: request.body } : {}),
+      ...(hasBody
+        ? {
+            body:
+              request.rawBody !== undefined
+                ? redactRecordValue(request.rawBody, secrets)
+                : redactJsonSecrets(request.body, secrets),
+          }
+        : {}),
     },
     response: {
       status: response.status,
       ...(contentType ? { contentType } : {}),
-      body: bodyIsJson ? body : truncateBody(redactRecordValue(rawBody, secrets)),
+      body: bodyIsJson
+        ? redactJsonSecrets(body, secrets)
+        : truncateBody(redactRecordValue(rawBody, secrets)),
       bodyIsJson,
     },
     verdict,

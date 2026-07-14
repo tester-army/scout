@@ -43,6 +43,12 @@ export type SpecResponse = {
   content?: Record<string, { schema?: unknown }>;
 };
 
+export type SpecAuthParameter = {
+  name: string;
+  in: "header" | "query" | "cookie";
+  scheme?: string;
+};
+
 export type SpecOperation = {
   method: HttpMethod;
   path: string;
@@ -52,6 +58,7 @@ export type SpecOperation = {
   tags: string[];
   deprecated: boolean;
   secured: boolean;
+  authParameters: SpecAuthParameter[];
   parameters: SpecParameter[];
   requestBody?: {
     required: boolean;
@@ -67,7 +74,10 @@ export type OpenApiDocument = {
   servers?: Array<{ url?: string }>;
   security?: Array<Record<string, unknown>>;
   paths?: Record<string, Record<string, unknown>>;
-  components?: unknown;
+  components?: {
+    securitySchemes?: Record<string, Record<string, unknown>>;
+    [key: string]: unknown;
+  };
   tags?: Array<{ name?: string; description?: string }>;
 };
 
@@ -259,14 +269,67 @@ export async function loadSpec(source: string): Promise<LoadedSpec> {
   };
 }
 
-function resolveSecured(
+/** Resolves operation-level security or falls back to the document default. */
+function resolveSecurity(
   operationSecurity: unknown,
   documentSecurity: Array<Record<string, unknown>> | undefined,
-): boolean {
-  const effective = Array.isArray(operationSecurity)
+): Array<Record<string, unknown>> {
+  return Array.isArray(operationSecurity)
     ? (operationSecurity as Array<Record<string, unknown>>)
     : (documentSecurity ?? []);
-  return effective.some((requirement) => Object.keys(requirement ?? {}).length > 0);
+}
+
+/** Returns true only when every allowed security alternative requires credentials. */
+function isSecured(security: Array<Record<string, unknown>>): boolean {
+  return (
+    security.length > 0 && security.every((requirement) => Object.keys(requirement).length > 0)
+  );
+}
+
+/** Resolves concrete credential locations from referenced OpenAPI security schemes. */
+function resolveAuthParameters(
+  security: Array<Record<string, unknown>>,
+  securitySchemes: Record<string, Record<string, unknown>> | undefined,
+): SpecAuthParameter[] {
+  if (!isSecured(security)) return [];
+
+  const parameters: SpecAuthParameter[] = [];
+  for (const requirement of security) {
+    for (const schemeName of Object.keys(requirement)) {
+      const scheme = securitySchemes?.[schemeName];
+      if (!scheme) continue;
+
+      const type = typeof scheme.type === "string" ? scheme.type : "";
+      if (type === "apiKey") {
+        const location = scheme.in;
+        const name = scheme.name;
+        if (
+          typeof name === "string" &&
+          (location === "header" || location === "query" || location === "cookie")
+        ) {
+          parameters.push({ name, in: location });
+        }
+      } else if (type === "http") {
+        parameters.push({
+          name: "Authorization",
+          in: "header",
+          ...(typeof scheme.scheme === "string" ? { scheme: scheme.scheme } : {}),
+        });
+      } else if (type === "oauth2" || type === "openIdConnect") {
+        parameters.push({ name: "Authorization", in: "header", scheme: "Bearer" });
+      }
+    }
+  }
+
+  return parameters.filter(
+    (parameter, index) =>
+      parameters.findIndex(
+        (candidate) =>
+          candidate.in === parameter.in &&
+          candidate.name === parameter.name &&
+          candidate.scheme === parameter.scheme,
+      ) === index,
+  );
 }
 
 function toSpecParameters(value: unknown): SpecParameter[] {
@@ -318,6 +381,7 @@ export function extractOperations(spec: OpenApiDocument): SpecOperation[] {
                 >) ?? {},
             }
           : undefined;
+      const security = resolveSecurity(operation.security, spec.security);
 
       operations.push({
         method,
@@ -333,7 +397,8 @@ export function extractOperations(spec: OpenApiDocument): SpecOperation[] {
           ? operation.tags.filter((tag): tag is string => typeof tag === "string")
           : [],
         deprecated: Boolean(operation.deprecated),
-        secured: resolveSecured(operation.security, spec.security),
+        secured: isSecured(security),
+        authParameters: resolveAuthParameters(security, spec.components?.securitySchemes),
         parameters: mergedParameters,
         ...(requestBody ? { requestBody } : {}),
         responses: (operation.responses as Record<string, SpecResponse>) ?? {},

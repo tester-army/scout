@@ -9,6 +9,7 @@ function operation(overrides: Partial<SpecOperation> = {}): SpecOperation {
     tags: [],
     deprecated: false,
     secured: false,
+    authParameters: [],
     parameters: [],
     responses: {
       "200": {
@@ -169,6 +170,43 @@ describe("buildVerdict", () => {
     expect(verdict.ok).toBe(true);
     expect(verdict.summary).toContain("PASS");
     expect(verdict.summary).toContain("status: not-in-spec");
+  });
+
+  it("fails an unrequested server error even when the spec documents 500", () => {
+    const op = operation({
+      responses: {
+        "200": { description: "ok" },
+        "500": { description: "server error" },
+      },
+    });
+    const verdict = buildVerdict({
+      ...base,
+      operation: op,
+      status: 500,
+      contentType: "application/json",
+      body: {},
+      bodyIsJson: true,
+    });
+
+    expect(verdict.serverError).toBe(true);
+    expect(verdict.statusExpected).toBe(true);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.summary).toContain("SERVER ERROR");
+  });
+
+  it("passes a 5xx only when explicitly asserted via --expect", () => {
+    const op = operation({ responses: { "500": { description: "server error" } } });
+    const verdict = buildVerdict({
+      ...base,
+      operation: op,
+      status: 500,
+      body: {},
+      bodyIsJson: false,
+      expect: 500,
+    });
+
+    expect(verdict.serverError).toBe(true);
+    expect(verdict.ok).toBe(true);
   });
 
   it("records expect matching and fails the verdict on a mismatch", () => {

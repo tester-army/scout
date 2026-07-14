@@ -1,5 +1,6 @@
 const URL_WITH_QUERY_RE = /\bhttps?:\/\/[^\s"'<>]+/gi;
-const SECRETISH_QUERY_KEY_RE = /token|key|secret|password|session|auth|signature|sig/i;
+const SECRETISH_QUERY_KEY_RE =
+  /(^|[-_])(api[-_]?key|key|token|secret|password|session|auth|signature|sig)([-_]|$)/i;
 
 /** Replaces exact resolved-secret values with a placeholder. */
 export function redactSecretsOnly(text: string, secrets: Array<string | undefined>): string {
@@ -12,17 +13,38 @@ export function redactSecretsOnly(text: string, secrets: Array<string | undefine
   return redacted;
 }
 
+/** Recursively redacts exact known secret strings in JSON-compatible values. */
+export function redactJsonSecrets(value: unknown, secrets: Array<string | undefined>): unknown {
+  if (typeof value === "string") {
+    return redactSecretsOnly(value, secrets);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactJsonSecrets(item, secrets));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, redactJsonSecrets(item, secrets)]),
+    );
+  }
+  return value;
+}
+
 /**
  * Redacts a URL for the evidence log: masks resolved secrets and the values
- * of secret-ish query parameters, but preserves the path and non-secret
- * query params so repros stay meaningful.
+ * of declared or secret-ish query parameters, but preserves the path and
+ * non-secret query params so repros stay meaningful.
  */
-export function redactUrl(rawUrl: string, secrets: Array<string | undefined>): string {
+export function redactUrl(
+  rawUrl: string,
+  secrets: Array<string | undefined>,
+  credentialQueryKeys: Iterable<string> = [],
+): string {
   const secretRedacted = redactSecretsOnly(rawUrl, secrets);
   try {
     const url = new URL(secretRedacted);
+    const credentialKeys = new Set(credentialQueryKeys);
     for (const key of [...url.searchParams.keys()]) {
-      if (SECRETISH_QUERY_KEY_RE.test(key)) {
+      if (credentialKeys.has(key) || SECRETISH_QUERY_KEY_RE.test(key)) {
         url.searchParams.set(key, "[redacted]");
       }
     }

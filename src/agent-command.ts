@@ -47,9 +47,9 @@ export async function runAgentInitCommand(options: AgentInitOptions): Promise<vo
     skill: install,
     agentsMd,
     nextSteps: [
-      "Run `scout init <spec> --base-url <url>` to cache the spec.",
-      "Run `scout sweep --json` for a deterministic baseline.",
-      "Explore with `scout endpoints --json` and `scout call ... --json`, then `scout report`.",
+      "Confirm authorized hosts, endpoints, methods, identities, rate, budget, and test window.",
+      "Run `scout init <spec> --base-url <url>`, then orient with `scout endpoints --json` and `scout schema ... --json`.",
+      "Run a filtered, capped `scout sweep`, explore with `scout call`, then `scout report`.",
     ],
   };
 
@@ -73,7 +73,7 @@ export async function runAgentInitCommand(options: AgentInitOptions): Promise<vo
     log.info("Skipped AGENTS.md update.");
   }
 
-  log.info("Next: `scout init <spec> --base-url <url>`, then `scout sweep --json`.");
+  log.info("Next: confirm authorized scope, then run `scout init <spec> --base-url <url>`.");
 }
 
 async function installPublicSkill(cwd: string): Promise<AgentInitResult["skill"]> {
@@ -138,13 +138,14 @@ function buildScoutAgentsBlock(): string {
     AGENTS_MD_START,
     "## Scout — API exploration",
     "",
-    "This project can use scout to safely explore and test APIs from an OpenAPI spec.",
+    "This project can use scout to explore and test authorized APIs from an OpenAPI spec.",
     "",
     "- **Skill:** use the public `scout` skill for the full workflow. Install/update with `npx skills add tester-army/scout` or `scout agent init`.",
+    "- **Authorize:** confirm hosts, endpoints, methods, identities/tenants, test data, rate, budget, and test window before requests.",
     "- **Start:** `scout init <spec> --base-url <url>` caches the spec; `scout status --json` shows session state.",
-    "- **Baseline:** `scout sweep --json` runs a deterministic no-LLM pass and records findings.",
-    "- **Explore:** `scout endpoints --json` / `scout schema <method> <path> --json` to orient; `scout call <method> <path> --json` to execute instrumented requests (every response carries a schema/status verdict).",
-    "- **Safety:** mutations are blocked unless the session was initialized with --allow-mutations; requests are restricted to the base-URL host.",
+    "- **Orient:** use `scout endpoints --json` / `scout schema <method> <path> --json`, then run a filtered, capped `scout sweep`.",
+    "- **Explore:** `scout call <method> <path> --json` executes instrumented requests with schema/status verdicts.",
+    "- **Safety:** mutations are blocked unless initialized with --allow-mutations; host guards do not replace authorization.",
     "- **Record & report:** `scout finding add ...` for anything suspicious; `scout coverage --json` for gaps; always finish with `scout report` (`--ci` for a CI gate).",
     AGENTS_MD_END,
   ].join("\n");

@@ -127,11 +127,10 @@ describe("end-to-end sweep against a known-bad API", () => {
     expect(titles).toMatch(/without credentials/i); // /secure 2xx without auth
     expect(titles).toMatch(/500/); // /boom
 
-    const critical = sweep.findings.find(
-      (f: { severity: string; category: string }) =>
-        f.severity === "critical" && f.category === "auth",
+    const authCandidate = sweep.findings.find(
+      (f: { severity: string; category: string }) => f.severity === "high" && f.category === "auth",
     );
-    expect(critical).toBeDefined();
+    expect(authCandidate).toBeDefined();
 
     logs.length = 0;
     await runReportCommand({ json: true, severityThreshold: "high" });

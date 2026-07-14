@@ -34,6 +34,7 @@ export async function runSchemaCommand(
     tags: operation.tags,
     deprecated: operation.deprecated,
     secured: operation.secured,
+    authParameters: operation.authParameters,
     parameters: operation.parameters,
     requestBody: operation.requestBody ?? null,
     responses: operation.responses,

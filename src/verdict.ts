@@ -16,6 +16,8 @@ export type Verdict = {
   schemaErrors: string[];
   schemaNote?: string;
   contentTypeMatch: boolean | "unknown";
+  /** True when the response status is 5xx — a server-side failure. */
+  serverError: boolean;
   latencyMs: number;
   redacted: boolean;
 };
@@ -34,7 +36,12 @@ type VerdictCore = Omit<Verdict, "ok" | "summary">;
 export function isVerdictOk(verdict: VerdictCore): boolean {
   if (verdict.expectMatched === false) return false;
   if (verdict.schemaValid === false) return false;
-  if (verdict.expectMatched === undefined && verdict.statusExpected === false) return false;
+  // An explicit --expect is a user assertion and wins. Absent one, an
+  // unrequested server error or undocumented status fails the verdict.
+  if (verdict.expectMatched === undefined) {
+    if (verdict.serverError) return false;
+    if (verdict.statusExpected === false) return false;
+  }
   return true;
 }
 
@@ -55,6 +62,10 @@ export function summarizeVerdict(verdict: VerdictCore): string {
   }
 
   parts.push(`status: ${describeStatusExpected(verdict)}`);
+
+  if (verdict.serverError) {
+    parts.push("SERVER ERROR");
+  }
 
   if (verdict.schemaValid === "unknown") {
     parts.push(`schema: n/a${verdict.schemaNote ? ` (${verdict.schemaNote})` : ""}`);
@@ -211,6 +222,7 @@ function buildVerdictCore(options: {
 
   const base = {
     status,
+    serverError: status >= 500,
     latencyMs: options.latencyMs,
     redacted: options.redacted,
     ...(options.expect !== undefined ? { expectMatched: status === options.expect } : {}),

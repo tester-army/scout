@@ -59,7 +59,48 @@ describe("extractOperations", () => {
 
     const createPet = operations.find((op) => operationKey(op) === "POST /pets");
     expect(createPet?.secured).toBe(true);
+    expect(createPet?.authParameters).toEqual([
+      { name: "Authorization", in: "header", scheme: "bearer" },
+    ]);
     expect(createPet?.requestBody?.required).toBe(true);
+  });
+
+  it("resolves custom credential locations and recognizes optional auth", () => {
+    const operations = extractOperations({
+      openapi: "3.1.0",
+      info: { title: "Auth API", version: "1" },
+      components: {
+        securitySchemes: {
+          headerKey: { type: "apiKey", in: "header", name: "X-Credential" },
+          queryKey: { type: "apiKey", in: "query", name: "accessCode" },
+        },
+      },
+      paths: {
+        "/required": {
+          get: {
+            security: [{ headerKey: [], queryKey: [] }],
+            responses: { "200": { description: "ok" } },
+          },
+        },
+        "/optional": {
+          get: {
+            security: [{}, { headerKey: [] }],
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+    });
+
+    const required = operations.find((operation) => operation.path === "/required");
+    expect(required?.secured).toBe(true);
+    expect(required?.authParameters).toEqual([
+      { name: "X-Credential", in: "header" },
+      { name: "accessCode", in: "query" },
+    ]);
+
+    const optional = operations.find((operation) => operation.path === "/optional");
+    expect(optional?.secured).toBe(false);
+    expect(optional?.authParameters).toEqual([]);
   });
 
   it("returns an empty list for a spec with no paths", () => {
