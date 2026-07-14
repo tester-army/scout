@@ -7,7 +7,7 @@ import {
   type ResolvedPolicy,
   type ScoutProjectConfig,
 } from "./project-config.js";
-import { redactMessage } from "./redaction.js";
+import { redactSecretsOnly, redactUrl } from "./redaction.js";
 import {
   appendRequestRecord,
   incrementRequestCount,
@@ -227,7 +227,7 @@ function assertBudgetAvailable(cwd: string, policy: ResolvedPolicy): void {
 }
 
 function redactRecordValue(value: string, secrets: string[]): string {
-  return redactMessage(value, secrets);
+  return redactSecretsOnly(value, secrets);
 }
 
 function truncateBody(body: string): string {
@@ -342,7 +342,7 @@ export async function executeCall(
     source: request.source,
     operation: operation ? operationKey(operation) : null,
     method: request.method.toUpperCase(),
-    url: redactRecordValue(url.toString(), secrets),
+    url: redactUrl(url.toString(), secrets),
     status: response.status,
     latencyMs,
     schemaValid: verdict.schemaValid,
@@ -362,7 +362,7 @@ export async function executeCall(
     operation: operation ? operationKey(operation) : null,
     request: {
       method: request.method.toUpperCase(),
-      url: redactRecordValue(url.toString(), secrets),
+      url: redactUrl(url.toString(), secrets),
       headers: redactedHeaders,
       ...(hasBody ? { body: request.body } : {}),
     },
