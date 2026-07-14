@@ -178,15 +178,17 @@ Examples:
 
   program
     .command("endpoints")
-    .description("list a compact endpoint index")
+    .description("list a compact endpoint index (capped; filter or use --all)")
     .option("--tag <tag>", "filter by tag")
     .option("--path <glob>", "filter by path glob")
     .option("--method <method>", "filter by HTTP method")
     .option("--search <query>", "filter by free-text search")
+    .option("--limit <n>", "max operations to show (default 100)", parseIntOption("--limit"))
+    .option("--all", "show every operation (no cap)")
     .option("--json", "output as JSON")
     .addHelpText(
       "after",
-      "\nExamples:\n  scout endpoints --json\n  scout endpoints --tag users --json\n  scout endpoints --path '/admin/**' --json\n",
+      "\nExamples:\n  scout endpoints --json\n  scout endpoints --tag users --json\n  scout endpoints --path '/admin/**' --json\n  scout endpoints --all --json\n",
     )
     .action(async (options: EndpointsOptions) => {
       try {
@@ -201,8 +203,13 @@ Examples:
     .description("show parameters, body, and response schemas for one operation")
     .argument("<method>", "HTTP method")
     .argument("<path>", "operation path, e.g. /users/{id}")
+    .option("--depth <n>", "cap schema nesting depth (default 6)", parseIntOption("--depth"))
+    .option("--full", "show full schema with no depth cap")
     .option("--json", "output as JSON")
-    .addHelpText("after", "\nExamples:\n  scout schema GET /users/{id} --json\n")
+    .addHelpText(
+      "after",
+      "\nExamples:\n  scout schema GET /users/{id} --json\n  scout schema GET /users/{id} --full --json\n",
+    )
     .action(async (method: string, path: string, options: SchemaOptions) => {
       try {
         await runSchemaCommand(method, path, options);
