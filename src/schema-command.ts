@@ -1,7 +1,6 @@
 import { ScoutError } from "./errors.js";
 import { loadCachedSpec } from "./session-store.js";
 import { extractOperations, operationKey, parseHttpMethodArg } from "./spec-loader.js";
-import { isInteractive } from "./utils.js";
 
 const DEFAULT_DEPTH = 6;
 
