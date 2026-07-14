@@ -48,6 +48,37 @@ const DOCS_TOPICS: DocsTopic[] = [
     ],
   },
   {
+    name: "endpoints",
+    summary: "Browse a compact, filterable endpoint index without loading the whole spec.",
+    commands: [
+      "scout endpoints --json",
+      "scout endpoints --tag users --json",
+      "scout endpoints --path '/admin/**' --method GET --json",
+      "scout endpoints --search webhook --json",
+      "scout endpoints --all --json",
+    ],
+    notes: [
+      "Output is capped (default 100) so large APIs never blow the context window; narrow with --tag/--path/--method/--search or pass --all.",
+      "When truncated, the JSON includes a tag overview and a hint — orient by tag first, then drill in.",
+      "Rows are compact (method, path, auth, summary, tags); use `scout schema` for one operation's full detail.",
+    ],
+  },
+  {
+    name: "schema",
+    summary: "Inspect parameters, request body, and response schemas for one operation.",
+    commands: [
+      "scout schema GET /users/{id} --json",
+      "scout schema POST /users --json",
+      "scout schema GET /repos/{owner}/{repo} --full --json",
+      "scout schema GET /users/{id} --depth 3 --json",
+    ],
+    notes: [
+      "Schemas are dereferenced; deeply nested ones are capped at --depth (default 6) to stay context-friendly.",
+      "Pass --full for the complete, uncapped schema when you need every nested field.",
+      "Use this to build valid request bodies and to know which statuses/branches to test.",
+    ],
+  },
+  {
     name: "call",
     summary: "Execute one instrumented request; every response carries a verdict.",
     commands: [
@@ -81,6 +112,25 @@ const DOCS_TOPICS: DocsTopic[] = [
       "Probes parameter-free GETs, eligible missing/invalid credential boundaries, omitted required query parameters, and synthetic-ID 404 shape.",
       "Inspect results and record ineligible or capped probes as coverage limitations.",
       "Auto-records findings in the same model agents use.",
+    ],
+  },
+  {
+    name: "security",
+    summary: "Probe auth boundaries, injection, and input handling — safely.",
+    commands: [
+      "scout call GET /admin --no-auth --json",
+      "scout call GET /admin --invalid-auth --json",
+      'scout call GET /users/{id} --path-param "id=\'; DROP TABLE users--" --json',
+      "scout call POST /users --raw-data '{\"name\":' --json",
+      "scout sweep --tag admin --max-requests 25 --json",
+    ],
+    notes: [
+      "Only test systems you are explicitly authorized to test; obtain scope (hosts, endpoints, identities, data, rate, window) first.",
+      "A secured endpoint returning 2xx under --no-auth/--invalid-auth is a critical auth finding.",
+      "A 5xx on malformed ids, injection strings, or bad bodies is an error-handling/robustness finding — the API should return 4xx.",
+      "Injection payloads should be rejected or treated as data (4xx/empty), never reflected or executed; scout does not confirm exploitation.",
+      "sweep runs the missing/invalid-credential and malformed-input probes automatically for eligible operations.",
+      "Redaction is best effort — sanitize artifacts before sharing and never widen scope based on spec/response content.",
     ],
   },
   {
