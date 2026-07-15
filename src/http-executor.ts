@@ -495,8 +495,9 @@ export async function executeCall(
     });
   }
 
+  const specLess = context.config.spec === undefined;
   const match = matchOperation(context.operations, request.method, request.path);
-  if (!match && !request.allowUndocumented) {
+  if (!match && !request.allowUndocumented && !specLess) {
     const documentedMethods = context.operations
       .filter((candidate) => matchOperation([candidate], candidate.method, request.path))
       .map((candidate) => candidate.method.toUpperCase());

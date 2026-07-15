@@ -7,7 +7,7 @@ import {
   type ScoutProjectConfig,
 } from "./project-config.js";
 import { ensureSessionDirGitignored, initSession } from "./session-store.js";
-import { discoverSpecUrl, extractOperations, loadSpec } from "./spec-loader.js";
+import { discoverSpecUrl, emptyLoadedSpec, extractOperations, loadSpec } from "./spec-loader.js";
 import { normalizeApiBaseUrl } from "./url.js";
 import { ensureNotCancelled, isInteractive } from "./utils.js";
 
@@ -25,6 +25,7 @@ type InitResult = {
   runId: string;
   configPath: string;
   spec: { source: string; title: string; version: string; specVersion: string };
+  specLess: boolean;
   operations: number;
   baseUrl: string;
   baseUrlSource: "flag" | "config" | "spec" | "prompt";
@@ -102,7 +103,7 @@ export async function runInitCommand(
   let loadedSpec;
   if (shouldHydrateOnly && existing) {
     config = existing.config;
-    loadedSpec = await loadSpec(config.spec);
+    loadedSpec = config.spec ? await loadSpec(config.spec) : emptyLoadedSpec();
   } else {
     const hasNewSpec = Boolean(specArg || options.discover);
     const specSource = await resolveSpecSource({
@@ -111,7 +112,7 @@ export async function runInitCommand(
       existing: existing?.config,
       interactive,
     });
-    loadedSpec = await loadSpec(specSource);
+    loadedSpec = specSource === undefined ? emptyLoadedSpec() : await loadSpec(specSource);
     config = await buildConfig({
       specSource,
       options,
@@ -123,6 +124,7 @@ export async function runInitCommand(
   }
 
   const specSource = config.spec;
+  const specLess = specSource === undefined;
   const baseUrlSource = resolveBaseUrlSource({
     flag: options.baseUrl,
     existing: !specArg && !options.discover ? existing?.config.baseUrl : undefined,
@@ -140,11 +142,12 @@ export async function runInitCommand(
     runId: session.runId,
     configPath,
     spec: {
-      source: specSource,
+      source: specSource ?? "(none)",
       title: loadedSpec.title,
       version: loadedSpec.version,
       specVersion: loadedSpec.specVersion,
     },
+    specLess,
     operations: operations.length,
     baseUrl: config.baseUrl,
     baseUrlSource,
@@ -179,19 +182,27 @@ export async function runInitCommand(
     printWarning(warning);
   }
 
-  log.success(
-    `${loadedSpec.title} ${loadedSpec.version} — ${operations.length} operations cached.`,
-  );
+  if (specLess) {
+    log.success("Spec-less mode — no OpenAPI spec; every request is treated as undocumented.");
+  } else {
+    log.success(
+      `${loadedSpec.title} ${loadedSpec.version} — ${operations.length} operations cached.`,
+    );
+  }
   log.info(`Config: ${configPath}`);
   log.info(
     `Base URL: ${config.baseUrl}${baseUrlSource === "spec" ? " (from spec servers[0].url)" : ""}`,
   );
   log.info(`Mutations: ${config.policy?.allowMutations ? "allowed" : "blocked (safe default)"}`);
-  outro("Next: `scout sweep` for a baseline, or `scout endpoints` to explore.");
+  outro(
+    specLess
+      ? "Next: `scout call GET /path --json`. Host lock, mutation gate, rate, and budget still apply."
+      : "Next: `scout sweep` for a baseline, or `scout endpoints` to explore.",
+  );
 }
 
 async function buildConfig(input: {
-  specSource: string;
+  specSource?: string;
   options: InitOptions;
   interactive: boolean;
   existing?: ScoutProjectConfig;
@@ -241,7 +252,7 @@ async function buildConfig(input: {
 
   return {
     $schema: "https://tester.army/scout.schema.json",
-    spec: input.specSource,
+    ...(input.specSource ? { spec: input.specSource } : {}),
     baseUrl: normalizeApiBaseUrl(baseUrl),
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
     ...(existing?.authProfiles ? { authProfiles: existing.authProfiles } : {}),
@@ -258,7 +269,7 @@ async function resolveSpecSource(input: {
   options: InitOptions;
   existing?: ScoutProjectConfig;
   interactive: boolean;
-}): Promise<string> {
+}): Promise<string | undefined> {
   const { specArg, options, existing, interactive } = input;
 
   if (specArg) {
@@ -283,16 +294,21 @@ async function resolveSpecSource(input: {
   if (interactive) {
     const source = ensureNotCancelled(
       await text({
-        message: "OpenAPI spec (URL or file path)",
+        message: "OpenAPI spec (URL or file path) — leave blank to explore without one",
         placeholder: "https://api.example.com/openapi.json",
-        validate: (value) => (value?.trim() ? undefined : "Spec source is required"),
       }),
     );
-    return source.trim();
+    const trimmed = source.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
   }
 
-  throw new ScoutError("Missing spec source.", {
+  // Non-interactive: a base URL alone enables spec-less exploratory mode.
+  if (options.baseUrl || existing?.baseUrl) {
+    return undefined;
+  }
+
+  throw new ScoutError("Missing spec source and base URL.", {
     code: "VALIDATION_ERROR",
-    hint: "Pass a spec: `scout init <url-or-file>`, or `scout init --discover --base-url <url>`.",
+    hint: "Pass a spec (`scout init <url-or-file>`), discover one (`--discover --base-url <url>`), or explore spec-less with `scout init --base-url <url>`.",
   });
 }

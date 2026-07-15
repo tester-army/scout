@@ -105,6 +105,30 @@ export function hashSpec(spec: unknown): string {
   return createHash("sha256").update(JSON.stringify(spec)).digest("hex").slice(0, 16);
 }
 
+/**
+ * Builds a synthetic, empty spec for spec-less exploratory mode. It has no
+ * operations, so every request is undocumented, but the executor's other
+ * guardrails (host lock, mutation gate, scope, rate, budget) still apply.
+ */
+export function emptyLoadedSpec(): LoadedSpec {
+  const spec = {
+    openapi: "3.1.0",
+    info: { title: "(no spec)", version: "0.0.0" },
+    paths: {},
+  } as unknown as OpenApiDocument;
+  return {
+    spec,
+    source: "(none)",
+    hash: hashSpec(spec),
+    title: "(no spec)",
+    version: "0.0.0",
+    specVersion: "3.1.0",
+    converted: false,
+    dereferenced: true,
+    warnings: [],
+  };
+}
+
 function isUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
 }

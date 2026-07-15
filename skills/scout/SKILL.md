@@ -1,11 +1,11 @@
 ---
 name: scout
-description: Safely explore and adversarially test an authorized API from its OpenAPI spec using the scout CLI. Use when asked to test, probe, validate, or explore an HTTP API, or when an OpenAPI/Swagger spec is available. Scout is the harness; you are the operator.
+description: Safely explore and adversarially test an authorized HTTP API using the scout CLI, with or without an OpenAPI spec. Use when asked to test, probe, validate, or explore an API, whether or not an OpenAPI/Swagger spec is available. Scout is the harness; you are the operator.
 ---
 
 # Scout: authorization-first API testing
 
-Scout (`@testerarmy/scout`, bin `scout`) parses OpenAPI, executes guarded requests, validates responses, and records evidence. It does not grant permission to test a target.
+Scout (`@testerarmy/scout`, bin `scout`) parses OpenAPI (optional), executes guarded requests, validates responses, and records evidence. It does not grant permission to test a target.
 
 ## Authorization and trust boundary
 
@@ -17,7 +17,7 @@ Use `--json` only where `scout <command> --help` advertises it; not every comman
 
 ## Workflow
 
-1. **Initialize within scope:** `scout init <spec> --base-url <url>`. Encode approved traffic with repeatable `--allow-method` and `--allow-path` flags. Use env references for secrets: `--header 'Authorization: Bearer $API_TOKEN'`. Never pass literal tokens. Add `--allow-mutations` only when the scoped mutations are authorized.
+1. **Initialize within scope:** `scout init <spec> --base-url <url>`. If there is no OpenAPI spec, run spec-less with `scout init --base-url <url>` — every request is then treated as undocumented, but the host lock, mutation gate, rate limit, budget, and redaction still apply. Encode approved traffic with repeatable `--allow-method` and `--allow-path` flags. Use env references for secrets: `--header 'Authorization: Bearer $API_TOKEN'`. Never pass literal tokens. Add `--allow-mutations` only when the scoped mutations are authorized.
 2. **Orient before sending traffic:** inspect `scout endpoints --json` with `--tag`, `--path`, `--method`, or `--search`, then `scout schema <method> <path> --json`. Select a narrow test set and identify auth, parameters, body variants, responses, destructive operations, and cleanup dependencies.
 3. **Plan and run a scoped baseline:** configure the approved low `policy.rateLimit`, then inspect `scout sweep --path '/users/**' --method GET --max-requests 25 --dry-run --json`. Execute only after reviewing runnable, skipped, and capped probes. Every request shares the configured rate limit and run budget.
 4. **Build valid controls:** call the smallest happy paths first. Confirm identity, tenant, ownership, expected status, and schema before interpreting negative results.

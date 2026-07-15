@@ -24,7 +24,9 @@ const authProfileSchema = z.strictObject({
 
 const projectConfigSchema = z.strictObject({
   $schema: z.string().optional(),
-  spec: z.string().min(1),
+  // Optional: omitting `spec` enables spec-less exploratory mode, where every
+  // request is treated as undocumented but all other guardrails still apply.
+  spec: z.string().min(1).optional(),
   baseUrl: z.string().min(1),
   headers: z.record(z.string(), z.string()).optional(),
   authProfiles: z.record(z.string(), authProfileSchema).optional(),

@@ -131,8 +131,8 @@ Examples:
 
   program
     .command("init")
-    .description("generate scout.json and cache the OpenAPI spec")
-    .argument("[spec]", "OpenAPI spec URL or file path")
+    .description("generate scout.json from an OpenAPI spec, or spec-less with just --base-url")
+    .argument("[spec]", "OpenAPI spec URL or file path (omit for spec-less mode)")
     .option("--base-url <url>", "base URL of the API under test")
     .option(
       "--header <header>",
@@ -152,6 +152,7 @@ Examples:
   scout init openapi.yaml --base-url https://api.example.com
   scout init openapi.yaml --base-url https://api.example.com --header 'Authorization: Bearer $API_TOKEN'
   scout init --discover --base-url https://api.example.com
+  scout init --base-url https://api.example.com   # spec-less: no OpenAPI spec required
   scout init --allow-mutations
 `,
     )

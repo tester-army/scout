@@ -256,6 +256,36 @@ describe("executeCall guardrails", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it("allows any documented-free path in spec-less mode without an opt-in", async () => {
+    const fetchMock = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const context = createTestContext(cwd, {}, []);
+    context.config = { ...context.config, spec: undefined };
+
+    const result = await executeCall(context, {
+      method: "get",
+      path: "/anything",
+      source: "call",
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(result.response.status).toBe(200);
+    expect(result.operation).toBeNull();
+  });
+
+  it("still blocks mutations in spec-less mode", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const context = createTestContext(cwd, {}, []);
+    context.config = { ...context.config, spec: undefined };
+    context.policy.allowMutations = false;
+
+    await expect(
+      executeCall(context, { method: "delete", path: "/anything", source: "call" }),
+    ).rejects.toThrow(/mutation/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("shares policy rate limiting across ordinary concurrent calls", async () => {
     const sentAt: number[] = [];
     vi.stubGlobal(
