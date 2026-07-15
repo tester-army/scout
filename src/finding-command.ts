@@ -7,6 +7,7 @@ import {
   type FindingStatus,
   validateFindingInput,
 } from "./findings.js";
+import { stringifyJson } from "./output.js";
 import { loadSessionState } from "./session-store.js";
 import { isInteractive } from "./utils.js";
 
@@ -30,7 +31,7 @@ export type FindingLifecycleOptions = {
 
 /** Records an agent-authored finding. */
 export async function runFindingAddCommand(options: FindingAddOptions): Promise<void> {
-  loadSessionState();
+  const state = loadSessionState();
   const validated = validateFindingInput(options);
 
   const finding = createFinding({
@@ -43,10 +44,10 @@ export async function runFindingAddCommand(options: FindingAddOptions): Promise<
     ...(options.repro ? { repro: options.repro } : {}),
   });
 
-  const recorded = appendFinding(finding).finding;
+  const recorded = appendFinding(finding, process.cwd(), state.runId).finding;
 
   if (options.json || !isInteractive()) {
-    console.log(JSON.stringify({ recorded: true, finding: recorded }, null, 2));
+    console.log(stringifyJson({ recorded: true, finding: recorded }));
     return;
   }
 
@@ -60,7 +61,7 @@ export async function runFindingListCommand(options: FindingListOptions): Promis
   const statuses = countFindingStatuses(findings);
 
   if (options.json || !isInteractive()) {
-    console.log(JSON.stringify({ count: findings.length, statuses, findings }, null, 2));
+    console.log(stringifyJson({ count: findings.length, statuses, findings }));
     return;
   }
 
@@ -105,10 +106,10 @@ function runFindingLifecycleCommand(
   status: FindingStatus,
   options: FindingLifecycleOptions,
 ): void {
-  loadSessionState();
-  const finding = updateFindingStatus(id, status);
+  const state = loadSessionState();
+  const finding = updateFindingStatus(id, status, process.cwd(), state.runId);
   if (options.json || !isInteractive()) {
-    console.log(JSON.stringify({ updated: true, status, finding }, null, 2));
+    console.log(stringifyJson({ updated: true, status, finding }));
     return;
   }
   console.log(

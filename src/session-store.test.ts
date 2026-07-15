@@ -3,10 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  appendFindingRecordForRun,
+  appendRequestRecordForRun,
   incrementRequestCount,
   initSession,
   loadCachedSpec,
   loadSessionState,
+  reserveRequest,
   resetSession,
 } from "./session-store.js";
 import type { LoadedSpec } from "./spec-loader.js";
@@ -61,6 +64,40 @@ describe("session runs", () => {
     expect(second.runId).not.toBe(first.runId);
     expect(second.requestCount).toBe(0);
     expect(loadCachedSpec(cwd)).toEqual(cached);
+    expect(existsSync(join(cwd, ".scout", "findings.jsonl"))).toBe(false);
+  });
+
+  it("reserves budget atomically and returns the owning run", () => {
+    const run = initSession(loadedSpec, cwd);
+    expect(reserveRequest(1, cwd)).toMatchObject({ runId: run.runId, requestCount: 1 });
+    expect(() => reserveRequest(1, cwd)).toThrow(/budget exhausted/);
+  });
+
+  it("rejects request and finding writes owned by a previous run", () => {
+    const first = initSession(loadedSpec, cwd);
+    resetSession(cwd);
+
+    expect(() =>
+      appendRequestRecordForRun(
+        {
+          id: "request",
+          runId: first.runId,
+          timestamp: "now",
+          source: "call",
+          operation: "GET /pets",
+          method: "GET",
+          url: "https://api.test/pets",
+          status: 200,
+          latencyMs: 1,
+          schemaValid: true,
+          requestHeaders: {},
+        },
+        first.runId,
+        cwd,
+      ),
+    ).toThrow(/active run changed/);
+    expect(() => appendFindingRecordForRun("{}", first.runId, cwd)).toThrow(/active run changed/);
+    expect(existsSync(join(cwd, ".scout", "requests.jsonl"))).toBe(false);
     expect(existsSync(join(cwd, ".scout", "findings.jsonl"))).toBe(false);
   });
 });

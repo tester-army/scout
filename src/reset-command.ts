@@ -1,4 +1,5 @@
 import { log } from "@clack/prompts";
+import { stringifyJson } from "./output.js";
 import { resetSession } from "./session-store.js";
 import { isInteractive } from "./utils.js";
 
@@ -10,7 +11,7 @@ export type ResetOptions = {
 export function runResetCommand(options: ResetOptions = {}): void {
   const state = resetSession();
   if (options.json || !isInteractive()) {
-    console.log(JSON.stringify({ runId: state.runId, createdAt: state.createdAt }, null, 2));
+    console.log(stringifyJson({ runId: state.runId, createdAt: state.createdAt }));
     return;
   }
 

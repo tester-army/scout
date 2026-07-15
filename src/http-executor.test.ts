@@ -135,8 +135,106 @@ describe("executeCall guardrails", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("applies a named header, query, and cookie auth profile", async () => {
+    vi.stubEnv("SCOUT_PROFILE_TOKEN", "profile-token");
+    vi.stubEnv("SCOUT_PROFILE_KEY", "profile-key");
+    vi.stubEnv("SCOUT_PROFILE_SESSION", "profile-session");
+    const fetchMock = vi.fn(
+      async () =>
+        new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const context = createTestContext(cwd, {
+      authorization: "Bearer global-token",
+      Cookie: "session=global-session; theme=dark",
+    });
+    context.authProfile = "admin";
+    context.config.authProfiles = {
+      admin: {
+        headers: { Authorization: "Bearer $SCOUT_PROFILE_TOKEN" },
+        query: { api_key: "$SCOUT_PROFILE_KEY" },
+        cookies: { session: "$SCOUT_PROFILE_SESSION" },
+      },
+    };
+
+    const result = await executeCall(context, { method: "get", path: "/pets", source: "call" });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.searchParams.get("api_key")).toBe("profile-key");
+    expect(init.headers).toMatchObject({
+      Authorization: "Bearer profile-token",
+      Cookie: "session=profile-session; theme=dark",
+    });
+    expect(result.request.headers.Authorization).toBe("[redacted]");
+    expect(result.request.headers.Cookie).toBe("[redacted]");
+    expect(result.request.url).not.toContain("profile-key");
+  });
+
+  it("does not resolve real query credentials for missing-auth probes", async () => {
+    const secured = {
+      ...op("get", "/pets"),
+      secured: true,
+      authParameters: [{ name: "api_key", in: "query" as const }],
+    };
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const context = createTestContext(cwd, {}, [secured]);
+    context.authProfile = "admin";
+    context.config.authProfiles = { admin: { query: { api_key: "$UNSET_PROFILE_KEY" } } };
+
+    await executeCall(context, { method: "get", path: "/pets", source: "call", noAuth: true });
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [URL];
+    expect(url.searchParams.has("api_key")).toBe(false);
+  });
+
+  it("rejects an unknown auth profile before sending", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const context = createTestContext(cwd);
+    context.authProfile = "missing";
+
+    await expect(
+      executeCall(context, { method: "get", path: "/pets", source: "call" }),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("enforces configured method and path scope before sending", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const context = createTestContext(cwd);
+    context.policy.allowedMethods = ["GET"];
+    context.policy.allowedPaths = ["/public/**"];
+
+    await expect(
+      executeCall(context, { method: "get", path: "/pets", source: "call" }),
+    ).rejects.toMatchObject({ code: "SCOPE_BLOCKED" });
+    await expect(
+      executeCall(context, { method: "post", path: "/pets", source: "call" }),
+    ).rejects.toMatchObject({ code: "SCOPE_BLOCKED" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects path parameters that normalize into another path", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const context = createTestContext(cwd, {}, [op("get", "/users/{id}/profile")]);
+
+    await expect(
+      executeCall(context, {
+        method: "get",
+        path: "/users/{id}/profile",
+        pathParams: { id: ".." },
+        source: "call",
+      }),
+    ).rejects.toMatchObject({ code: "SCOPE_BLOCKED" });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("rejects undocumented method/path pairs unless explicitly allowed", async () => {
@@ -516,6 +614,52 @@ describe("executeCall request security", () => {
     expect(result.request.headers.Authorization).toBe("[redacted]");
     expect(result.response.body).toEqual({ credential: "[redacted]" });
   });
+
+  it("omits fuzz bodies and redacts echoed secret-like fields", async () => {
+    const secret = 'super-"secret\\value';
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ password: secret, safe: "visible" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeCall(createTestContext(cwd), {
+      method: "post",
+      path: "/pets",
+      source: "fuzz",
+      body: { password: secret, name: "scout" },
+      redactBodyEvidence: true,
+    });
+
+    expect(result.request.body).toBe("[redacted fuzz body]");
+    expect(result.response.body).toEqual({ password: "[redacted]", safe: "visible" });
+    const record = JSON.parse(readFileSync(join(cwd, ".scout", "requests.jsonl"), "utf-8"));
+    expect(record.requestBody).toBe("[redacted fuzz body]");
+    expect(record.responseBody).not.toContain("super-");
+  });
+
+  it("preserves raw JSON response evidence outside fuzz redaction", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response('{"large":9007199254740993,"exponent":1e3}', {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await executeCall(createTestContext(cwd), {
+      method: "get",
+      path: "/pets",
+      source: "call",
+    });
+
+    const record = JSON.parse(readFileSync(join(cwd, ".scout", "requests.jsonl"), "utf-8"));
+    expect(record.responseBody).toBe('{"large":9007199254740993,"exponent":1e3}');
+  });
 });
 
 describe("executeCall response surface", () => {
@@ -556,6 +700,10 @@ describe("executeCall response surface", () => {
     expect(result.response.headers["x-powered-by"]).toBe("Next.js");
     expect(result.response.headers["set-cookie"]).toBe("session=[redacted]; HttpOnly");
     expect(result.response.headers.authorization).toBe("[redacted]");
+
+    const record = JSON.parse(readFileSync(join(cwd, ".scout", "requests.jsonl"), "utf-8"));
+    expect(record.responseHeaders.server).toBe("Vercel");
+    expect(record.responseHeaders["set-cookie"]).toBe("session=[redacted]; HttpOnly");
   });
 
   it("redacts the tester's own secret when echoed in a benign response header", async () => {

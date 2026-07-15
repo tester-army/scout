@@ -3,10 +3,6 @@ import { createExecutorContext } from "./http-executor.js";
 import { runSweepCommand } from "./sweep-command.js";
 import { runSweep } from "./sweep-engine.js";
 
-vi.mock("./cli-analytics.js", () => ({
-  captureCliTelemetryEvent: vi.fn(),
-  cliAnalyticsEvents: { sweepCompleted: "sweep_completed" },
-}));
 vi.mock("./http-executor.js", () => ({ createExecutorContext: vi.fn() }));
 vi.mock("./sweep-engine.js", () => ({ runSweep: vi.fn() }));
 
@@ -26,6 +22,7 @@ describe("runSweepCommand", () => {
           responses: {},
         },
       ],
+      policy: { allowMutations: false, rateLimit: 5, budget: 20 },
     } as ReturnType<typeof createExecutorContext>);
   });
 

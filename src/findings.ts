@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { ScoutError } from "./errors.js";
-import { getFindingsFilePath } from "./session-store.js";
+import {
+  appendFindingRecordForRun,
+  getFindingsFilePath,
+  runWithActiveRun,
+} from "./session-store.js";
 
 export const FINDING_SEVERITIES = ["critical", "high", "medium", "low", "info"] as const;
 export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
@@ -19,7 +23,7 @@ export type FindingCategory = (typeof FINDING_CATEGORIES)[number];
 export type Finding = {
   id: string;
   timestamp: string;
-  source: "sweep" | "agent";
+  source: "sweep" | "fuzz" | "agent";
   severity: FindingSeverity;
   category: FindingCategory;
   endpoint: string;
@@ -89,7 +93,11 @@ export function createFinding(input: Omit<Finding, "id" | "timestamp">): Finding
 }
 
 /** Appends a finding unless the same deterministic finding is already recorded. */
-export function appendFinding(finding: Finding, cwd = process.cwd()): FindingWriteResult {
+export function appendFinding(
+  finding: Finding,
+  cwd = process.cwd(),
+  expectedRunId?: string,
+): FindingWriteResult {
   if (finding.source !== "agent") {
     const key = findingDeduplicationKey(finding);
     const existing = readFindings(cwd).find(
@@ -98,8 +106,11 @@ export function appendFinding(finding: Finding, cwd = process.cwd()): FindingWri
     if (existing) return { finding: existing, created: false };
   }
 
-  const path = getFindingsFilePath(cwd);
-  appendFileSync(path, `${JSON.stringify(finding)}\n`);
+  if (expectedRunId) {
+    appendFindingRecordForRun(JSON.stringify(finding), expectedRunId, cwd);
+  } else {
+    writeFileSync(getFindingsFilePath(cwd), `${JSON.stringify(finding)}\n`, { flag: "a" });
+  }
   return { finding, created: true };
 }
 
@@ -128,30 +139,35 @@ export function updateFindingStatus(
   id: string,
   status: FindingStatus,
   cwd = process.cwd(),
+  expectedRunId?: string,
 ): Finding {
-  const findings = readFindings(cwd);
-  const index = findings.findIndex((finding) => finding.id === id);
-  if (index === -1) {
-    throw new ScoutError(`Finding ${id} was not found.`, {
-      code: "NOT_FOUND",
-      hint: "Run `scout finding list --json` to copy a current finding id.",
-    });
-  }
+  const update = () => {
+    const findings = readFindings(cwd);
+    const index = findings.findIndex((finding) => finding.id === id);
+    if (index === -1) {
+      throw new ScoutError(`Finding ${id} was not found.`, {
+        code: "NOT_FOUND",
+        hint: "Run `scout finding list --json` to copy a current finding id.",
+      });
+    }
 
-  const updated = { ...findings[index], status } as Finding;
-  findings[index] = updated;
-  const path = getFindingsFilePath(cwd);
-  const temporaryPath = `${path}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(
-    temporaryPath,
-    findings.map((finding) => JSON.stringify(finding)).join("\n") + "\n",
-    {
-      encoding: "utf-8",
-      mode: 0o600,
-    },
-  );
-  renameSync(temporaryPath, path);
-  return updated;
+    const updated = { ...findings[index], status } as Finding;
+    findings[index] = updated;
+    const path = getFindingsFilePath(cwd);
+    const temporaryPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+    writeFileSync(
+      temporaryPath,
+      findings.map((finding) => JSON.stringify(finding)).join("\n") + "\n",
+      {
+        encoding: "utf-8",
+        mode: 0o600,
+      },
+    );
+    renameSync(temporaryPath, path);
+    return updated;
+  };
+
+  return expectedRunId ? runWithActiveRun(expectedRunId, update, cwd) : update();
 }
 
 /** Validates finding input coming from CLI flags. */

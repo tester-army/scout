@@ -37,7 +37,6 @@ describe("init run isolation", () => {
     await runInitCommand("first.json", {
       baseUrl: "https://override.test",
       header: ["X-Test: old"],
-      allowHost: ["uploads.test"],
       allowMutations: true,
       json: true,
     });
@@ -56,7 +55,6 @@ describe("init run isolation", () => {
     const { runInitCommand } = await import("./init-command.js");
     await runInitCommand("first.json", {
       header: ["X-Test: kept"],
-      allowHost: ["uploads.test"],
       json: true,
     });
     const firstRun = loadSessionState();
@@ -73,5 +71,15 @@ describe("init run isolation", () => {
     expect(loadSessionState().requestCount).toBe(0);
     expect(readFileSync(join(cwd, "scout.json"), "utf-8")).toBe(configBefore);
     expect(() => readFileSync(join(cwd, ".scout", "requests.jsonl"), "utf-8")).toThrow();
+  });
+
+  it("does not persist empty scope arrays when only one scope flag is provided", async () => {
+    const { runInitCommand } = await import("./init-command.js");
+    await runInitCommand("first.json", { allowMethod: ["get"], json: true });
+
+    expect(loadProjectConfig()?.config.policy).toEqual({
+      allowMutations: false,
+      allowedMethods: ["GET"],
+    });
   });
 });

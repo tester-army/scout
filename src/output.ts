@@ -1,4 +1,9 @@
 import { log, type LogMessageOptions } from "@clack/prompts";
+
+/** Serializes compact machine output, retaining readable JSON in a TTY. */
+export function stringifyJson(value: unknown): string {
+  return JSON.stringify(value, null, process.stdout.isTTY ? 2 : undefined);
+}
 import { isInteractive } from "./utils.js";
 
 /** Prints one line in both interactive and non-interactive terminals. */

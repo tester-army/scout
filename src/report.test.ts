@@ -125,6 +125,25 @@ describe("buildReportJson", () => {
     expect(report.provenance.runId).toBe("run-1");
     expect(report.coverage).not.toHaveProperty("operations");
   });
+
+  it("uses exact coverage for a 100 percent gate", () => {
+    const report = buildReportJson({
+      title: "API",
+      version: "1.0.0",
+      specSource: "spec.json",
+      findings: [],
+      coverage: {
+        ...coverage,
+        totalOperations: 200,
+        exercised: 199,
+        coveragePercent: 100,
+      },
+      severityThreshold: "high",
+      minCoverage: 100,
+      provenance,
+    });
+    expect(report.summary.incompleteReasons).toContain("coverage-below-minimum");
+  });
 });
 
 describe("buildReportMarkdown", () => {

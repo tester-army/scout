@@ -65,6 +65,35 @@ describe("write + load round trip", () => {
     );
     expect(() => loadProjectConfig({ cwd: dir })).toThrow(/literal secrets/);
   });
+
+  it("rejects literal auth profile values in CI", () => {
+    vi.stubEnv("CI", "1");
+    writeFileSync(
+      join(dir, "scout.json"),
+      JSON.stringify({
+        ...base,
+        authProfiles: { admin: { cookies: { session: "literal-token" } } },
+      }),
+    );
+    expect(() => loadProjectConfig({ cwd: dir })).toThrow(/authProfiles\.admin\.cookies\.session/);
+  });
+
+  it("accepts environment references in auth profiles", () => {
+    writeFileSync(
+      join(dir, "scout.json"),
+      JSON.stringify({
+        ...base,
+        authProfiles: {
+          admin: {
+            headers: { Authorization: "Bearer $ADMIN_TOKEN" },
+            query: { api_key: "$ADMIN_KEY" },
+            cookies: { session: "$ADMIN_SESSION" },
+          },
+        },
+      }),
+    );
+    expect(loadProjectConfig({ cwd: dir })?.config.authProfiles?.admin).toBeDefined();
+  });
 });
 
 describe("resolvePolicy", () => {

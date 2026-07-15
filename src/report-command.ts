@@ -2,7 +2,9 @@ import { writeFileSync } from "node:fs";
 import { computeCoverage } from "./coverage.js";
 import { ScoutError } from "./errors.js";
 import { parseSeverity, readFindings, type FindingSeverity } from "./findings.js";
-import { loadProjectConfigOrThrow } from "./project-config.js";
+import { scopeOperations } from "./operation-filter.js";
+import { stringifyJson } from "./output.js";
+import { loadProjectConfigOrThrow, resolvePolicy } from "./project-config.js";
 import { buildReportJson, buildReportMarkdown, type ReportInput } from "./report.js";
 import { loadCachedSpec, loadSessionState, readRequestRecords } from "./session-store.js";
 import { extractOperations } from "./spec-loader.js";
@@ -24,7 +26,7 @@ export async function runReportCommand(options: ReportOptions): Promise<void> {
   const state = loadSessionState();
   const loadedSpec = loadCachedSpec();
   const { config } = loadProjectConfigOrThrow();
-  const operations = extractOperations(loadedSpec.spec);
+  const operations = scopeOperations(extractOperations(loadedSpec.spec), resolvePolicy(config));
   const findings = readFindings();
   const records = readRequestRecords();
   const coverage = computeCoverage(operations, records);
@@ -32,7 +34,7 @@ export async function runReportCommand(options: ReportOptions): Promise<void> {
   const severityThreshold: FindingSeverity = options.severityThreshold
     ? parseSeverity(options.severityThreshold)
     : "high";
-  const minCoverage = options.minCoverage ?? 0;
+  const minCoverage = options.minCoverage ?? (options.ci ? 100 : 0);
   if (!Number.isFinite(minCoverage) || minCoverage < 0 || minCoverage > 100) {
     throw new ScoutError("--min-coverage must be between 0 and 100.", {
       code: "VALIDATION_ERROR",
@@ -77,7 +79,7 @@ export async function runReportCommand(options: ReportOptions): Promise<void> {
   }
 
   if (options.json || !isInteractive()) {
-    console.log(JSON.stringify(reportJson, null, 2));
+    console.log(stringifyJson(reportJson));
     return;
   }
 

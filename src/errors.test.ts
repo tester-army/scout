@@ -7,23 +7,6 @@ describe("CLI error envelopes", () => {
     expect(isJsonOutputRequested(["node", "scout", "status"])).toBe(false);
   });
 
-  it("formats missing API key errors", () => {
-    expect(
-      toJsonErrorEnvelope(
-        new Error("Missing API key. Run `scout auth` first or set TESTERARMY_API_KEY."),
-        2,
-      ),
-    ).toEqual({
-      success: false,
-      error: {
-        code: "AUTH_REQUIRED",
-        message: "Missing API key. Run `scout auth` first or set TESTERARMY_API_KEY.",
-        hint: "Run `scout auth` or set TESTERARMY_API_KEY.",
-      },
-      exitCode: 2,
-    });
-  });
-
   it("formats API status errors", () => {
     const error = new Error("Forbidden") as Error & { statusCode: number };
     error.statusCode = 403;
@@ -33,8 +16,8 @@ describe("CLI error envelopes", () => {
       error: {
         code: "AUTH_FAILED",
         message:
-          "Authentication failed. Please run `scout auth` to configure your API key or check that your key is valid.",
-        hint: "Run `scout auth` or set TESTERARMY_API_KEY, then retry the command.",
+          "Target API authentication failed. Check the selected auth profile or configured headers.",
+        hint: "Check the target API credentials configured in scout.json and retry.",
         statusCode: 403,
       },
       exitCode: 2,

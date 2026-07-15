@@ -157,6 +157,27 @@ function compileValidator(schema: object, specVersion: string): ValidateFunction
   return validator;
 }
 
+/** Validates one JSON-compatible value against an OpenAPI response or request schema. */
+export function validateSchemaValue(
+  schema: object | boolean,
+  specVersion: string,
+  value: unknown,
+): { valid: boolean; errors: string[] } | null {
+  if (schema === true) return { valid: true, errors: [] };
+  if (schema === false) return { valid: false, errors: ["(root) boolean schema is false"] };
+  const validator = compileValidator(schema, specVersion);
+  if (!validator) return null;
+  const valid = validator(value);
+  return {
+    valid: Boolean(valid),
+    errors: valid
+      ? []
+      : (validator.errors ?? []).map(
+          (error) => `${error.instancePath || "(root)"} ${error.message ?? "invalid"}`,
+        ),
+  };
+}
+
 /** Selects the response definition for a status: exact > 2XX-style > default. */
 export function selectResponseSpec(
   responses: Record<string, SpecResponse>,
@@ -282,7 +303,11 @@ function buildVerdictCore(options: {
       ? "unknown"
       : declaredContentTypes.some((key) => mediaTypeMatches(key, options.contentType));
 
-  if (schema === undefined || schema === null || typeof schema !== "object") {
+  if (
+    schema === undefined ||
+    schema === null ||
+    (typeof schema !== "object" && typeof schema !== "boolean")
+  ) {
     return {
       ...base,
       expectedStatuses,
@@ -306,8 +331,8 @@ function buildVerdictCore(options: {
     };
   }
 
-  const validator = compileValidator(schema, options.specVersion);
-  if (!validator) {
+  const validation = validateSchemaValue(schema, options.specVersion, options.body);
+  if (!validation) {
     return {
       ...base,
       expectedStatuses,
@@ -319,19 +344,12 @@ function buildVerdictCore(options: {
     };
   }
 
-  const valid = validator(options.body);
-  const schemaErrors = valid
-    ? []
-    : (validator.errors ?? []).map(
-        (error) => `${error.instancePath || "(root)"} ${error.message ?? "invalid"}`,
-      );
-
   return {
     ...base,
     expectedStatuses,
     statusExpected,
-    schemaValid: Boolean(valid),
-    schemaErrors,
+    schemaValid: validation.valid,
+    schemaErrors: validation.errors,
     contentTypeMatch,
   };
 }

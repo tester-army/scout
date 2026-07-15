@@ -7,6 +7,9 @@ export type OperationCoverage = {
   operation: string;
   state: OperationCoverageState;
   calls: number;
+  controlCalls: number;
+  negativeCalls: number;
+  statuses: number[];
 };
 
 export type CoverageSummary = {
@@ -31,12 +34,32 @@ export function computeCoverage(
   operations: SpecOperation[],
   records: RequestRecord[],
 ): CoverageSummary {
-  const callsByOperation = new Map<string, { calls: number; validated: boolean }>();
+  const callsByOperation = new Map<
+    string,
+    {
+      calls: number;
+      controlCalls: number;
+      negativeCalls: number;
+      statuses: Set<number>;
+      validated: boolean;
+    }
+  >();
   for (const record of records) {
     if (!record.operation) continue;
-    const entry = callsByOperation.get(record.operation) ?? { calls: 0, validated: false };
+    const entry = callsByOperation.get(record.operation) ?? {
+      calls: 0,
+      controlCalls: 0,
+      negativeCalls: 0,
+      statuses: new Set<number>(),
+      validated: false,
+    };
     entry.calls += 1;
-    if (record.schemaValid === true) {
+    const isControl =
+      record.testKind === "control" || (!record.testKind && record.source === "call");
+    if (isControl) entry.controlCalls += 1;
+    else entry.negativeCalls += 1;
+    entry.statuses.add(record.status);
+    if (isControl && record.status >= 200 && record.status < 400 && record.schemaValid === true) {
       entry.validated = true;
     }
     callsByOperation.set(record.operation, entry);
@@ -49,7 +72,14 @@ export function computeCoverage(
     if (entry) {
       state = entry.validated ? "validated" : "called";
     }
-    return { operation: key, state, calls: entry?.calls ?? 0 };
+    return {
+      operation: key,
+      state,
+      calls: entry?.calls ?? 0,
+      controlCalls: entry?.controlCalls ?? 0,
+      negativeCalls: entry?.negativeCalls ?? 0,
+      statuses: [...(entry?.statuses ?? [])].sort((a, b) => a - b),
+    };
   });
 
   const exercised = operationCoverage.filter((op) => op.state !== "unexercised").length;

@@ -54,7 +54,22 @@ describe("computeCoverage", () => {
     expect(summary.coveragePercent).toBe(67);
     expect(summary.requestTotals).toEqual({ recorded: 2, matched: 2, probes: 0 });
     expect(summary.operations.find((o) => o.operation === "GET /pets")?.state).toBe("validated");
+    expect(summary.operations.find((o) => o.operation === "GET /pets")).toMatchObject({
+      controlCalls: 1,
+      negativeCalls: 0,
+      statuses: [200],
+    });
     expect(summary.operations.find((o) => o.operation === "POST /pets")?.state).toBe("called");
     expect(summary.untouched).toEqual(["GET /pets/{id}"]);
+  });
+
+  it("does not treat negative probes as validated controls", () => {
+    const negative = { ...record("GET /pets", true), source: "fuzz" as const };
+    const summary = computeCoverage(operations, [negative]);
+    expect(summary.operations.find((o) => o.operation === "GET /pets")).toMatchObject({
+      state: "called",
+      controlCalls: 0,
+      negativeCalls: 1,
+    });
   });
 });

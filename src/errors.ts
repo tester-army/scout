@@ -11,6 +11,7 @@ export type ScoutErrorCode =
   | "NO_SESSION"
   | "MUTATION_BLOCKED"
   | "HOST_BLOCKED"
+  | "SCOPE_BLOCKED"
   | "BUDGET_EXCEEDED"
   | "SPEC_INVALID"
   | "ENV_VAR_MISSING"
@@ -84,15 +85,15 @@ export function toErrorMessage(error: unknown): string {
 
   if (statusCode !== undefined) {
     if (statusCode === 404) {
-      return `API endpoint not found. Please check your base URL or ensure the Tester Army service is running.`;
+      return "API endpoint not found. Check the operation path and configured base URL.";
     }
 
     if (statusCode === 401 || statusCode === 403) {
-      return `Authentication failed. Please run \`scout auth\` to configure your API key or check that your key is valid.`;
+      return "Target API authentication failed. Check the selected auth profile or configured headers.";
     }
 
     if (statusCode >= 500) {
-      return `Tester Army service is temporarily unavailable (${statusCode}). Please try again later.`;
+      return `Target API is unavailable (${statusCode}). Stop testing and check service health.`;
     }
 
     return `API request failed (${statusCode}). Please check your connection and try again.`;
@@ -139,11 +140,9 @@ function getErrorCode(error: unknown, statusCode: number | undefined): string {
   }
 
   const message = error instanceof Error ? error.message : String(error);
-  if (/missing api key|api key is required/i.test(message)) return "AUTH_REQUIRED";
   if (/invalid json/i.test(message)) return "INVALID_JSON";
   if (/no input on stdin/i.test(message)) return "STDIN_REQUIRED";
   if (/econnrefused|enotfound|network|could not connect/i.test(message)) return "NETWORK_ERROR";
-  if (/unknown docs topic/i.test(message)) return "UNKNOWN_DOCS_TOPIC";
   if (/missing required|nothing to update|must be/i.test(message)) {
     return "VALIDATION_ERROR";
   }
@@ -157,28 +156,21 @@ function getErrorHint(error: unknown, statusCode: number | undefined): string | 
   }
 
   if (statusCode === 401 || statusCode === 403) {
-    return "Run `scout auth` or set TESTERARMY_API_KEY, then retry the command.";
+    return "Check the target API credentials configured in scout.json and retry.";
   }
   if (statusCode === 404) {
-    return "Check the resource ID, base URL, and whether the TesterArmy service is reachable.";
+    return "Check the resource ID, operation path, and configured base URL.";
   }
   if (statusCode !== undefined && statusCode >= 500) {
     return "Retry later. If this persists, capture the command and JSON error output for support.";
   }
 
   const message = error instanceof Error ? error.message : String(error);
-  if (/missing api key|api key is required/i.test(message)) {
-    return "Run `scout auth` or set TESTERARMY_API_KEY.";
-  }
   if (/invalid json/i.test(message)) {
     return "Validate the JSON payload being piped to stdin.";
   }
   if (/no input on stdin/i.test(message)) {
     return "Pipe a JSON object into the command, for example `cat payload.json | scout call POST /users --data-stdin --json`.";
   }
-  if (/unknown docs topic/i.test(message)) {
-    return "Run `scout docs --json` to list available topics.";
-  }
-
   return undefined;
 }

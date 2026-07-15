@@ -1,5 +1,7 @@
 import { getBorderCharacters, table } from "table";
-import { filterOperations, type OperationFilter } from "./operation-filter.js";
+import { filterOperations, scopeOperations, type OperationFilter } from "./operation-filter.js";
+import { stringifyJson } from "./output.js";
+import { loadProjectConfigOrThrow, resolvePolicy } from "./project-config.js";
 import { loadCachedSpec } from "./session-store.js";
 import { extractOperations, type SpecOperation } from "./spec-loader.js";
 import { isInteractive } from "./utils.js";
@@ -55,9 +57,11 @@ function tagOverview(operations: SpecOperation[]): Array<{ tag: string; count: n
  */
 export async function runEndpointsCommand(options: EndpointsOptions): Promise<void> {
   const loadedSpec = loadCachedSpec();
-  const matched = filterOperations(extractOperations(loadedSpec.spec), options).sort(
-    (a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method),
-  );
+  const { config } = loadProjectConfigOrThrow();
+  const matched = filterOperations(
+    scopeOperations(extractOperations(loadedSpec.spec), resolvePolicy(config)),
+    options,
+  ).sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
 
   const limit = options.all ? matched.length : (options.limit ?? DEFAULT_LIMIT);
   const shown = matched.slice(0, limit);
@@ -77,7 +81,7 @@ export async function runEndpointsCommand(options: EndpointsOptions): Promise<vo
       payload.tags = tagOverview(matched);
       payload.hint = `Showing ${shown.length} of ${matched.length}. Narrow with --tag <tag>, --path <glob>, --method <m>, or --search <q>; or pass --all.`;
     }
-    console.log(JSON.stringify(payload, null, 2));
+    console.log(stringifyJson(payload));
     return;
   }
 

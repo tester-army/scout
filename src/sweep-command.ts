@@ -1,7 +1,11 @@
-import { captureCliTelemetryEvent, cliAnalyticsEvents } from "./cli-analytics.js";
 import { appendFinding, type Finding } from "./findings.js";
 import { createExecutorContext } from "./http-executor.js";
-import { resolveOperationsOrThrow, type OperationFilter } from "./operation-filter.js";
+import {
+  resolveOperationsOrThrow,
+  scopeOperations,
+  type OperationFilter,
+} from "./operation-filter.js";
+import { stringifyJson } from "./output.js";
 import { runSweep } from "./sweep-engine.js";
 import { isInteractive } from "./utils.js";
 
@@ -11,13 +15,18 @@ export type SweepOptions = OperationFilter & {
   /** Commander sets this to false when `--no-auth-probes` is passed (default true). */
   authProbes?: boolean;
   dryRun?: boolean;
-  config?: string;
+  authProfile?: string;
 };
 
 /** Runs the deterministic no-LLM pre-pass and records findings. */
 export async function runSweepCommand(options: SweepOptions): Promise<void> {
-  const context = createExecutorContext({ config: options.config });
-  const operations = resolveOperationsOrThrow(context.operations, options);
+  const context = createExecutorContext({
+    authProfile: options.authProfile,
+  });
+  const operations = resolveOperationsOrThrow(
+    scopeOperations(context.operations, context.policy),
+    options,
+  );
 
   const summary = await runSweep(context, operations, {
     ...(options.maxRequests !== undefined ? { maxRequests: options.maxRequests } : {}),
@@ -28,22 +37,13 @@ export async function runSweepCommand(options: SweepOptions): Promise<void> {
   let findingsCreated = 0;
   const findings: Finding[] = [];
   for (const finding of summary.findings) {
-    const recorded = appendFinding(finding);
+    const recorded = appendFinding(finding, context.cwd, summary.runId);
     if (recorded.created) findingsCreated += 1;
     findings.push(recorded.finding);
   }
 
-  if (!options.dryRun) {
-    void captureCliTelemetryEvent({
-      event: cliAnalyticsEvents.sweepCompleted,
-      properties: {
-        probes_run: summary.probesRun,
-        findings_created: findingsCreated,
-      },
-    }).catch(() => {});
-  }
-
   const result = {
+    runId: summary.runId,
     probesPlanned: summary.probesPlanned,
     probesRunnable: summary.probesRunnable,
     probesRun: summary.probesRun,
@@ -59,7 +59,7 @@ export async function runSweepCommand(options: SweepOptions): Promise<void> {
   };
 
   if (options.json || !isInteractive()) {
-    console.log(JSON.stringify(result, null, 2));
+    console.log(stringifyJson(result));
     return;
   }
 

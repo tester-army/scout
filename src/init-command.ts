@@ -1,7 +1,6 @@
 import { isCancel, confirm, intro, log, outro, text } from "@clack/prompts";
-import { captureCliTelemetryEvent, cliAnalyticsEvents } from "./cli-analytics.js";
 import { ScoutError } from "./errors.js";
-import { printWarning } from "./output.js";
+import { printWarning, stringifyJson } from "./output.js";
 import {
   loadProjectConfig,
   writeProjectConfig,
@@ -17,9 +16,9 @@ export type InitOptions = {
   baseUrl?: string;
   header?: string[];
   allowMutations?: boolean;
-  allowHost?: string[];
+  allowMethod?: string[];
+  allowPath?: string[];
   discover?: boolean;
-  config?: string;
 };
 
 type InitResult = {
@@ -29,7 +28,7 @@ type InitResult = {
   operations: number;
   baseUrl: string;
   baseUrlSource: "flag" | "config" | "spec" | "prompt";
-  policy: { allowMutations: boolean };
+  policy: { allowMutations: boolean; allowedMethods?: string[]; allowedPaths?: string[] };
   converted: boolean;
   dereferenced: boolean;
   warnings: string[];
@@ -81,7 +80,7 @@ export async function runInitCommand(
   specArg: string | undefined,
   options: InitOptions,
 ): Promise<void> {
-  const existing = loadProjectConfig({ config: options.config });
+  const existing = loadProjectConfig();
   const interactive = isInteractive() && !options.json;
   const flagHeaders = parseHeaderFlags(options.header);
 
@@ -90,9 +89,10 @@ export async function runInitCommand(
     !specArg &&
     !options.baseUrl &&
     !options.allowMutations &&
+    (options.allowMethod ?? []).length === 0 &&
+    (options.allowPath ?? []).length === 0 &&
     !options.discover &&
-    Object.keys(flagHeaders).length === 0 &&
-    (options.allowHost ?? []).length === 0;
+    Object.keys(flagHeaders).length === 0;
 
   if (interactive && !shouldHydrateOnly) {
     intro("scout init");
@@ -130,9 +130,7 @@ export async function runInitCommand(
     resolved: config.baseUrl,
   });
 
-  const { path: configPath, literalSecretHeaders } = writeProjectConfig(config, {
-    config: options.config,
-  });
+  const { path: configPath, literalSecretHeaders } = writeProjectConfig(config);
   const gitignoreUpdated = ensureSessionDirGitignored();
   const session = initSession(loadedSpec);
 
@@ -150,7 +148,11 @@ export async function runInitCommand(
     operations: operations.length,
     baseUrl: config.baseUrl,
     baseUrlSource,
-    policy: { allowMutations: config.policy?.allowMutations ?? false },
+    policy: {
+      allowMutations: config.policy?.allowMutations ?? false,
+      ...(config.policy?.allowedMethods ? { allowedMethods: config.policy.allowedMethods } : {}),
+      ...(config.policy?.allowedPaths ? { allowedPaths: config.policy.allowedPaths } : {}),
+    },
     converted: loadedSpec.converted,
     dereferenced: loadedSpec.dereferenced,
     warnings: loadedSpec.warnings,
@@ -158,22 +160,13 @@ export async function runInitCommand(
     hydratedOnly: shouldHydrateOnly,
   };
 
-  void captureCliTelemetryEvent({
-    event: cliAnalyticsEvents.init,
-    properties: {
-      operations: operations.length,
-      converted: loadedSpec.converted,
-      spec_version: loadedSpec.specVersion,
-    },
-  }).catch(() => {});
-
   if (options.json || !isInteractive()) {
     if (literalSecretHeaders.length > 0) {
       result.warnings.push(
         `Headers may contain literal secrets: ${literalSecretHeaders.join(", ")}. Use $VAR references.`,
       );
     }
-    console.log(JSON.stringify(result, null, 2));
+    console.log(stringifyJson(result));
     return;
   }
 
@@ -237,15 +230,26 @@ async function buildConfig(input: {
   }
 
   const headers = { ...(existing?.headers ?? {}), ...flagHeaders };
-  const allowHosts = [...new Set([...(existing?.allowHosts ?? []), ...(options.allowHost ?? [])])];
+  const allowedMethods =
+    options.allowMethod && options.allowMethod.length > 0
+      ? options.allowMethod.map((method) => method.toUpperCase())
+      : existing?.policy?.allowedMethods;
+  const allowedPaths =
+    options.allowPath && options.allowPath.length > 0
+      ? options.allowPath
+      : existing?.policy?.allowedPaths;
 
   return {
     $schema: "https://tester.army/scout.schema.json",
     spec: input.specSource,
     baseUrl: normalizeApiBaseUrl(baseUrl),
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
-    ...(allowHosts.length > 0 ? { allowHosts } : {}),
-    policy: { allowMutations },
+    ...(existing?.authProfiles ? { authProfiles: existing.authProfiles } : {}),
+    policy: {
+      allowMutations,
+      ...(allowedMethods ? { allowedMethods } : {}),
+      ...(allowedPaths ? { allowedPaths } : {}),
+    },
   };
 }
 

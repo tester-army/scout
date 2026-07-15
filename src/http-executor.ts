@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import picomatch from "picomatch";
 import {
   DEFAULT_REQUEST_TIMEOUT_MS,
   MAX_RESPONSE_DOWNLOAD_BYTES,
@@ -13,10 +14,10 @@ import {
 } from "./project-config.js";
 import { redactJsonSecrets, redactSecretsOnly, redactUrl } from "./redaction.js";
 import {
-  appendRequestRecord,
-  incrementRequestCount,
+  appendRequestRecordForRun,
   loadCachedSpec,
-  loadSessionState,
+  reserveRateLimitSlot,
+  reserveRequest,
   type RequestRecord,
 } from "./session-store.js";
 import {
@@ -34,6 +35,8 @@ const SECRETISH_HEADER_RE =
   /(^|[-_])(authorization|api[-_]?key|key|token|secret|cookie|session|password|auth)([-_]|$)/i;
 const SECRETISH_QUERY_KEY_RE =
   /(^|[-_])(api[-_]?key|key|token|secret|password|session|auth|signature|sig)([-_]|$)/i;
+const SECRETISH_BODY_KEY_RE =
+  /(^|[-_])(api[-_]?key|key|token|secret|password|session|auth|cookie)([-_]|$)/i;
 const INVALID_CREDENTIAL = "scout-invalid-credential";
 const MAX_STORED_BODY_LENGTH = 4000;
 
@@ -43,6 +46,7 @@ export type ExecutorContext = {
   policy: ResolvedPolicy;
   loadedSpec: LoadedSpec;
   operations: SpecOperation[];
+  authProfile?: string;
 };
 
 export type CallRequest = {
@@ -55,10 +59,12 @@ export type CallRequest = {
   rawBody?: string;
   noAuth?: boolean;
   invalidAuth?: boolean;
+  redactBodyEvidence?: boolean;
   expect?: number;
-  source: "call" | "sweep";
+  source: "call" | "sweep" | "fuzz";
   timeoutMs?: number;
   allowUndocumented?: boolean;
+  authProfile?: string;
 };
 
 export type CallResult = {
@@ -102,35 +108,25 @@ export class RateLimiter {
   }
 }
 
-const sharedRateLimiters = new Map<string, { rate: number; limiter: RateLimiter }>();
-
-/** Returns the process-wide limiter for a project and target. */
-function getSharedRateLimiter(context: ExecutorContext): RateLimiter {
-  const key = `${context.cwd}\0${context.config.baseUrl}`;
-  const existing = sharedRateLimiters.get(key);
-  if (existing?.rate === context.policy.rateLimit) return existing.limiter;
-
-  const limiter = new RateLimiter(context.policy.rateLimit);
-  sharedRateLimiters.set(key, { rate: context.policy.rateLimit, limiter });
-  return limiter;
-}
-
 /** Loads config + cached spec into a ready-to-execute context. */
 export function createExecutorContext(options?: {
   cwd?: string;
   config?: string;
   policyOverrides?: Partial<ResolvedPolicy>;
+  authProfile?: string;
 }): ExecutorContext {
   const cwd = options?.cwd ?? process.cwd();
   const { config } = loadProjectConfigOrThrow({ cwd, config: options?.config });
   const loadedSpec = loadCachedSpec(cwd);
+  const policy = resolvePolicy(config, options?.policyOverrides);
 
   return {
     cwd,
     config,
-    policy: resolvePolicy(config, options?.policyOverrides),
+    policy,
     loadedSpec,
     operations: extractOperations(loadedSpec.spec),
+    ...(options?.authProfile ? { authProfile: options.authProfile } : {}),
   };
 }
 
@@ -219,11 +215,21 @@ function substitutePathParams(path: string, pathParams: Record<string, string>):
 
 function assertHostAllowed(url: URL, config: ScoutProjectConfig): void {
   const baseHost = new URL(config.baseUrl).host;
-  const allowedHosts = new Set([baseHost, ...(config.allowHosts ?? [])]);
-  if (!allowedHosts.has(url.host)) {
+  if (url.host !== baseHost) {
     throw new ScoutError(`Host ${url.host} is not allowlisted.`, {
       code: "HOST_BLOCKED",
-      hint: `Allowed hosts: ${[...allowedHosts].join(", ")}. Add it to allowHosts in scout.json or re-run \`scout init --allow-host ${url.host}\`.`,
+      hint: `Scout only permits the configured base URL host: ${baseHost}.`,
+    });
+  }
+}
+
+function assertPathNotNormalized(url: URL, baseUrl: string, concretePath: string): void {
+  const basePath = new URL(baseUrl).pathname.replace(/\/$/, "");
+  const expectedPath = `${basePath}${concretePath.startsWith("/") ? "" : "/"}${concretePath}`;
+  if (url.pathname !== expectedPath) {
+    throw new ScoutError("Path parameters would normalize outside the documented operation path.", {
+      code: "SCOPE_BLOCKED",
+      hint: "Do not use dot-segment path parameter values such as . or ...",
     });
   }
 }
@@ -239,19 +245,22 @@ function assertMethodAllowed(method: HttpMethod, policy: ResolvedPolicy): void {
   });
 }
 
-/** Reserves one request from the session budget before any asynchronous work. */
-function reserveBudget(cwd: string, policy: ResolvedPolicy): void {
-  const state = loadSessionState(cwd);
-  if (state.requestCount >= policy.budget) {
-    throw new ScoutError(
-      `Session request budget exhausted (${state.requestCount}/${policy.budget}).`,
-      {
-        code: "BUDGET_EXCEEDED",
-        hint: "Raise policy.budget in scout.json, or re-run `scout init` to start a fresh session.",
-      },
-    );
+function assertOperationInScope(method: HttpMethod, path: string, policy: ResolvedPolicy): void {
+  if (
+    policy.allowedMethods &&
+    !policy.allowedMethods.some((allowed) => allowed.toUpperCase() === method.toUpperCase())
+  ) {
+    throw new ScoutError(`${method.toUpperCase()} is outside the configured operation scope.`, {
+      code: "SCOPE_BLOCKED",
+      hint: `Allowed methods: ${policy.allowedMethods.join(", ")}.`,
+    });
   }
-  incrementRequestCount(cwd);
+  if (policy.allowedPaths && !policy.allowedPaths.some((pattern) => picomatch(pattern)(path))) {
+    throw new ScoutError(`${path} is outside the configured operation scope.`, {
+      code: "SCOPE_BLOCKED",
+      hint: `Allowed path patterns: ${policy.allowedPaths.join(", ")}.`,
+    });
+  }
 }
 
 function redactRecordValue(value: string, secrets: string[]): string {
@@ -283,6 +292,18 @@ function collectAvailableEnvSecrets(template: string, secrets: string[]): void {
 
 type CookiePair = { name: string; value: string };
 
+function mergeHeadersCaseInsensitive(
+  ...sources: Array<Record<string, string> | undefined>
+): Record<string, string> {
+  const result = new Map<string, { name: string; value: string }>();
+  for (const source of sources) {
+    for (const [name, value] of Object.entries(source ?? {})) {
+      result.set(name.toLowerCase(), { name, value });
+    }
+  }
+  return Object.fromEntries([...result.values()].map(({ name, value }) => [name, value]));
+}
+
 /** Parses a Cookie header into name/value pairs. */
 function parseCookieHeader(value: string): CookiePair[] {
   return value
@@ -300,6 +321,16 @@ function parseCookieHeader(value: string): CookiePair[] {
 /** Serializes Cookie header pairs without changing their names or order. */
 function serializeCookieHeader(pairs: CookiePair[]): string {
   return pairs.map(({ name, value }) => `${name}=${value}`).join("; ");
+}
+
+function mergeCookieHeaders(...values: Array<string | undefined>): string | undefined {
+  const result = new Map<string, CookiePair>();
+  for (const value of values) {
+    for (const pair of value ? parseCookieHeader(value) : []) {
+      result.set(pair.name.toLowerCase(), pair);
+    }
+  }
+  return result.size > 0 ? serializeCookieHeader([...result.values()]) : undefined;
 }
 
 /** Removes or replaces auth cookies while preserving unrelated cookie pairs. */
@@ -326,6 +357,26 @@ function transformCookieHeader(
 function collectCookieSecrets(value: string, secrets: string[]): void {
   for (const pair of parseCookieHeader(value)) {
     if (pair.value && pair.value !== INVALID_CREDENTIAL) secrets.push(pair.value);
+  }
+}
+
+/** Collects non-trivial values under secret-like body keys for response redaction. */
+function collectSecretishBodyValues(
+  value: unknown,
+  secrets: string[],
+  seen: WeakSet<object> = new WeakSet(),
+): void {
+  if (!value || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) collectSecretishBodyValues(item, secrets, seen);
+    return;
+  }
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (SECRETISH_BODY_KEY_RE.test(key) && typeof item === "string" && item.length >= 4) {
+      secrets.push(item);
+    }
+    collectSecretishBodyValues(item, secrets, seen);
   }
 }
 
@@ -432,7 +483,6 @@ function collectResponseHeaders(
 export async function executeCall(
   context: ExecutorContext,
   request: CallRequest,
-  rateLimiter?: RateLimiter,
 ): Promise<CallResult> {
   if (request.noAuth && request.invalidAuth) {
     throw new ScoutError("--no-auth cannot be used with --invalid-auth.", {
@@ -463,6 +513,14 @@ export async function executeCall(
     );
   }
   const operation = match?.operation ?? null;
+  const authProfileName = request.authProfile ?? context.authProfile;
+  const authProfile = authProfileName ? context.config.authProfiles?.[authProfileName] : undefined;
+  if (authProfileName && !authProfile) {
+    throw new ScoutError(`Unknown auth profile "${authProfileName}".`, {
+      code: "VALIDATION_ERROR",
+      hint: "Add it to scout.json authProfiles or choose a configured profile.",
+    });
+  }
   const authHeaderNames = new Set(
     operation?.authParameters
       .filter((parameter) => parameter.in === "header")
@@ -506,16 +564,25 @@ export async function executeCall(
 
   const baseUrl = context.config.baseUrl.replace(/\/$/, "");
   const url = new URL(`${baseUrl}${concretePath.startsWith("/") ? "" : "/"}${concretePath}`);
+  assertPathNotNormalized(url, baseUrl, concretePath);
   const secrets: string[] = [];
   let hasCredentialTarget = false;
-  for (const [key, value] of Object.entries(request.query ?? {})) {
+  const profileQuery = authProfile?.query ?? {};
+  for (const [key, template] of Object.entries({ ...profileQuery, ...(request.query ?? {}) })) {
     const credentialLike = isProbeCredentialQuery(key);
-    const syntheticCredential = request.invalidAuth === true && credentialLike;
     if (credentialLike) hasCredentialTarget = true;
     if (request.noAuth && credentialLike) continue;
-    const effectiveValue = syntheticCredential ? INVALID_CREDENTIAL : value;
+    let effectiveValue = request.invalidAuth && credentialLike ? INVALID_CREDENTIAL : template;
+    const fromProfile =
+      !Object.hasOwn(request.query ?? {}, key) && Object.hasOwn(profileQuery, key);
+    if (effectiveValue !== INVALID_CREDENTIAL && fromProfile) {
+      const resolved = resolveEnvRefs(effectiveValue);
+      effectiveValue = resolved.value;
+      secrets.push(...resolved.secrets);
+    }
     url.searchParams.append(key, effectiveValue);
-    if (isSensitiveQuery(key)) secrets.push(value);
+    if (isSensitiveQuery(key) && effectiveValue !== INVALID_CREDENTIAL)
+      secrets.push(effectiveValue);
   }
   for (const name of authQueryNames) {
     hasCredentialTarget = true;
@@ -525,11 +592,30 @@ export async function executeCall(
   }
 
   assertHostAllowed(url, context.config);
+  assertOperationInScope(request.method, operation?.path ?? request.path, context.policy);
   assertMethodAllowed(request.method, context.policy);
 
+  const profileCookies = Object.entries(authProfile?.cookies ?? {})
+    .map(([name, value]) => `${name}=${value}`)
+    .join("; ");
+  const configuredHeaders = mergeHeadersCaseInsensitive(
+    context.config.headers,
+    authProfile?.headers,
+  );
+  if (profileCookies) {
+    const cookieName = Object.keys(configuredHeaders).find(
+      (name) => name.toLowerCase() === "cookie",
+    );
+    const mergedCookies = mergeCookieHeaders(
+      cookieName ? configuredHeaders[cookieName] : undefined,
+      profileCookies,
+    );
+    if (cookieName) delete configuredHeaders[cookieName];
+    if (mergedCookies) configuredHeaders.Cookie = mergedCookies;
+  }
   const headers: Record<string, string> = {};
   const syntheticCredentialHeaders = new Set<string>();
-  for (const [name, template] of Object.entries(context.config.headers ?? {})) {
+  for (const [name, template] of Object.entries(configuredHeaders)) {
     let effectiveTemplate = template;
     if (isSensitiveHeader(name)) {
       collectAvailableEnvSecrets(template, secrets);
@@ -627,6 +713,10 @@ export async function executeCall(
     syntheticCredentialHeaders.add("authorization");
   }
 
+  if (request.redactBodyEvidence && request.body !== undefined) {
+    collectSecretishBodyValues(request.body, secrets);
+  }
+
   const hasBody = request.body !== undefined || request.rawBody !== undefined;
   let serializedBody: string | undefined;
   if (request.rawBody !== undefined) {
@@ -638,8 +728,11 @@ export async function executeCall(
     headers["Content-Type"] = "application/json";
   }
 
-  reserveBudget(context.cwd, context.policy);
-  await (rateLimiter ?? getSharedRateLimiter(context)).take();
+  const reservedRun = reserveRequest(context.policy.budget, context.cwd);
+  const rateLimitWait = reserveRateLimitSlot(context.policy.rateLimit, context.cwd);
+  if (rateLimitWait > 0) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, rateLimitWait));
+  }
 
   const startedAt = performance.now();
   const downloadController = new AbortController();
@@ -717,11 +810,31 @@ export async function executeCall(
 
   const redactedUrl = redactUrl(url.toString(), secrets, authQueryNames);
   const redactedRawBody = redactRecordValue(rawBody, secrets);
+  const responseBodyForEvidence =
+    request.redactBodyEvidence && bodyIsJson
+      ? JSON.stringify(redactJsonSecrets(body, secrets))
+      : redactedRawBody;
+  let surfacedRequestBody: unknown;
+  if (hasBody) {
+    if (request.redactBodyEvidence) surfacedRequestBody = "[redacted fuzz body]";
+    else if (request.rawBody !== undefined) {
+      surfacedRequestBody = redactRecordValue(request.rawBody, secrets);
+    } else {
+      surfacedRequestBody = redactJsonSecrets(request.body, secrets);
+    }
+  }
 
   const record: RequestRecord = {
     id: requestId,
     timestamp: new Date().toISOString(),
     source: request.source,
+    testKind:
+      request.source === "call" &&
+      !request.noAuth &&
+      !request.invalidAuth &&
+      request.rawBody === undefined
+        ? "control"
+        : "negative",
     operation: operation ? operationKey(operation) : null,
     method: request.method.toUpperCase(),
     url: redactedUrl,
@@ -730,13 +843,22 @@ export async function executeCall(
     schemaValid: verdict.schemaValid,
     requestHeaders: redactedHeaders,
     ...(hasBody
-      ? { requestBody: truncateBody(redactRecordValue(serializedBody ?? "", secrets)) }
+      ? {
+          requestBody: request.redactBodyEvidence
+            ? "[redacted fuzz body]"
+            : truncateBody(redactRecordValue(serializedBody ?? "", secrets)),
+        }
       : {}),
-    responseBody: truncateBody(redactedRawBody),
+    responseBody: truncateBody(responseBodyForEvidence),
+    responseHeaders,
     ...(contentType ? { responseContentType: contentType } : {}),
   };
 
-  appendRequestRecord(record, context.cwd);
+  appendRequestRecordForRun(
+    { ...record, runId: reservedRun.runId },
+    reservedRun.runId,
+    context.cwd,
+  );
 
   const redactedResponseBody = bodyIsJson ? redactJsonSecrets(body, secrets) : redactedRawBody;
   const serializedResponseBody =
@@ -754,14 +876,7 @@ export async function executeCall(
       method: request.method.toUpperCase(),
       url: redactedUrl,
       headers: redactedHeaders,
-      ...(hasBody
-        ? {
-            body:
-              request.rawBody !== undefined
-                ? redactRecordValue(request.rawBody, secrets)
-                : redactJsonSecrets(request.body, secrets),
-          }
-        : {}),
+      ...(hasBody ? { body: surfacedRequestBody } : {}),
     },
     response: {
       status: response.status,

@@ -10,8 +10,16 @@ import { ScoutError } from "./errors.js";
 
 const policySchema = z.strictObject({
   allowMutations: z.boolean().optional(),
+  allowedMethods: z.array(z.string().min(1)).min(1).optional(),
+  allowedPaths: z.array(z.string().min(1)).min(1).optional(),
   rateLimit: z.number().positive().optional(),
   budget: z.number().int().positive().optional(),
+});
+
+const authProfileSchema = z.strictObject({
+  headers: z.record(z.string(), z.string()).optional(),
+  query: z.record(z.string(), z.string()).optional(),
+  cookies: z.record(z.string(), z.string()).optional(),
 });
 
 const projectConfigSchema = z.strictObject({
@@ -19,7 +27,7 @@ const projectConfigSchema = z.strictObject({
   spec: z.string().min(1),
   baseUrl: z.string().min(1),
   headers: z.record(z.string(), z.string()).optional(),
-  allowHosts: z.array(z.string()).optional(),
+  authProfiles: z.record(z.string(), authProfileSchema).optional(),
   policy: policySchema.optional(),
 });
 
@@ -27,6 +35,8 @@ export type ScoutProjectConfig = z.infer<typeof projectConfigSchema>;
 
 export type ResolvedPolicy = {
   allowMutations: boolean;
+  allowedMethods?: string[];
+  allowedPaths?: string[];
   rateLimit: number;
   budget: number;
 };
@@ -49,6 +59,18 @@ export function detectLiteralSecretHeaders(headers: Record<string, string> | und
   return Object.entries(headers)
     .filter(([name, value]) => SECRETISH_HEADER_RE.test(name) && !ENV_REF_RE.test(value))
     .map(([name]) => name);
+}
+
+/** Detects literal credentials in named target auth profiles. */
+function detectLiteralAuthProfileValues(profiles: ScoutProjectConfig["authProfiles"]): string[] {
+  if (!profiles) return [];
+  return Object.entries(profiles).flatMap(([profileName, profile]) =>
+    Object.entries(profile).flatMap(([location, values]) =>
+      Object.entries(values ?? {})
+        .filter(([, value]) => !ENV_REF_RE.test(value))
+        .map(([name]) => `authProfiles.${profileName}.${location}.${name}`),
+    ),
+  );
 }
 
 /** Loads and validates scout.json. Returns null when the file does not exist. */
@@ -82,11 +104,14 @@ export function loadProjectConfig(options?: {
       .join("; ");
     throw new ScoutError(`Invalid scout.json at ${path}: ${issues}`, {
       code: "VALIDATION_ERROR",
-      hint: "Allowed keys: spec, baseUrl, headers, allowHosts, policy { allowMutations, rateLimit, budget }. Re-run `scout init` to regenerate.",
+      hint: "Allowed keys: spec, baseUrl, headers, authProfiles, policy { allowMutations, allowedMethods, allowedPaths, rateLimit, budget }. Re-run `scout init` to regenerate.",
     });
   }
 
-  const literalSecrets = detectLiteralSecretHeaders(result.data.headers);
+  const literalSecrets = [
+    ...detectLiteralSecretHeaders(result.data.headers),
+    ...detectLiteralAuthProfileValues(result.data.authProfiles),
+  ];
   if (literalSecrets.length > 0 && process.env.CI) {
     throw new ScoutError(
       `scout.json headers contain literal secrets (${literalSecrets.join(", ")}). Refusing to run in CI.`,
@@ -126,7 +151,13 @@ export function writeProjectConfig(
   const path = getProjectConfigPath(options);
   const validated = projectConfigSchema.parse(config);
   writeFileSync(path, `${JSON.stringify(validated, null, 2)}\n`);
-  return { path, literalSecretHeaders: detectLiteralSecretHeaders(validated.headers) };
+  return {
+    path,
+    literalSecretHeaders: [
+      ...detectLiteralSecretHeaders(validated.headers),
+      ...detectLiteralAuthProfileValues(validated.authProfiles),
+    ],
+  };
 }
 
 /** Resolves effective safety policy: flags > scout.json > defaults. */
@@ -136,6 +167,12 @@ export function resolvePolicy(
 ): ResolvedPolicy {
   return {
     allowMutations: overrides?.allowMutations ?? config?.policy?.allowMutations ?? false,
+    ...((overrides?.allowedMethods ?? config?.policy?.allowedMethods)
+      ? { allowedMethods: overrides?.allowedMethods ?? config?.policy?.allowedMethods }
+      : {}),
+    ...((overrides?.allowedPaths ?? config?.policy?.allowedPaths)
+      ? { allowedPaths: overrides?.allowedPaths ?? config?.policy?.allowedPaths }
+      : {}),
     rateLimit: overrides?.rateLimit ?? config?.policy?.rateLimit ?? DEFAULT_RATE_LIMIT_RPS,
     budget: overrides?.budget ?? config?.policy?.budget ?? DEFAULT_REQUEST_BUDGET,
   };

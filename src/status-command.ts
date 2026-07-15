@@ -1,12 +1,8 @@
-import { captureCliCommandEvent } from "./cli-analytics.js";
-import { getConfigFilePath, loadCliConfig } from "./config-store.js";
 import { readFindings } from "./findings.js";
-import { printLine } from "./output.js";
+import { printLine, stringifyJson } from "./output.js";
 import { loadProjectConfig, resolvePolicy } from "./project-config.js";
 import { loadSessionState, sessionExists } from "./session-store.js";
 import { isInteractive } from "./utils.js";
-
-type ApiKeySource = "environment" | "config" | "none";
 
 export interface StatusCommandOptions {
   json?: boolean;
@@ -14,29 +10,23 @@ export interface StatusCommandOptions {
 
 interface SessionInfo {
   active: boolean;
+  runId?: string;
+  createdAt?: string;
   specSource?: string;
   specHash?: string;
   baseUrl?: string;
   requestsUsed?: number;
   requestBudget?: number;
+  rateLimit?: number;
   allowMutations?: boolean;
+  allowedMethods?: string[];
+  allowedPaths?: string[];
   findings?: number;
 }
 
-interface StatusResult {
-  authenticated: boolean;
-  apiKeySource: ApiKeySource;
-  environmentApiKeySet: boolean;
-  configApiKeySet: boolean;
-  configPath: string;
-  session: SessionInfo;
-}
-
-/** Gathers on-disk session details for status output (no network). */
+/** Gathers local project and run details without network access. */
 function resolveSessionInfo(): SessionInfo {
-  if (!sessionExists()) {
-    return { active: false };
-  }
+  if (!sessionExists()) return { active: false };
 
   const state = loadSessionState();
   const projectConfig = loadProjectConfig();
@@ -44,88 +34,46 @@ function resolveSessionInfo(): SessionInfo {
 
   return {
     active: true,
+    runId: state.runId,
+    createdAt: state.createdAt,
     specSource: state.specSource,
     specHash: state.specHash,
     ...(projectConfig ? { baseUrl: projectConfig.config.baseUrl } : {}),
     requestsUsed: state.requestCount,
     requestBudget: policy.budget,
+    rateLimit: policy.rateLimit,
     allowMutations: policy.allowMutations,
+    ...(policy.allowedMethods ? { allowedMethods: policy.allowedMethods } : {}),
+    ...(policy.allowedPaths ? { allowedPaths: policy.allowedPaths } : {}),
     findings: readFindings().length,
   };
 }
 
-/** Resolves active API key using the same precedence as runtime commands. */
-function resolveActiveApiKey(options: { envApiKey?: string; configApiKey?: string }): ApiKeySource {
-  if (options.envApiKey?.trim()) {
-    return "environment";
-  }
-
-  if (options.configApiKey?.trim()) {
-    return "config";
-  }
-
-  return "none";
-}
-
-/**
- * Runs `scout status` command flow. No network calls. Session details
- * (spec info, budget, findings count) land here once session-store exists.
- */
+/** Prints local project and run status without making network requests. */
 export async function runStatusCommand(options: StatusCommandOptions = {}): Promise<void> {
-  const configPath = getConfigFilePath();
-  const existingConfig = await loadCliConfig();
-  const envApiKey = process.env.TESTERARMY_API_KEY;
-  const configApiKey = existingConfig.apiKey;
-
-  const apiKeySource = resolveActiveApiKey({
-    envApiKey,
-    configApiKey,
-  });
-
-  const result: StatusResult = {
-    authenticated: apiKeySource !== "none",
-    apiKeySource,
-    environmentApiKeySet: Boolean(envApiKey?.trim()),
-    configApiKeySet: Boolean(configApiKey?.trim()),
-    configPath,
-    session: resolveSessionInfo(),
-  };
-
-  const captureStatusTelemetry = () =>
-    captureCliCommandEvent({
-      command: "status",
-      properties: {
-        authenticated: result.authenticated,
-        api_key_source: result.apiKeySource,
-        output_format: options.json || !isInteractive() ? "json" : "human",
-      },
-    });
+  const result = { session: resolveSessionInfo() };
 
   if (options.json || !isInteractive()) {
-    console.log(JSON.stringify(result, null, 2));
-    await captureStatusTelemetry();
+    console.log(stringifyJson(result));
     return;
   }
 
-  if (result.session.active) {
-    printLine(`Session: active (${result.session.specSource})`);
-    printLine(`Base URL: ${result.session.baseUrl ?? "unknown"}`);
-    printLine(`Requests used: ${result.session.requestsUsed}/${result.session.requestBudget}`);
-    printLine(`Mutations: ${result.session.allowMutations ? "allowed" : "blocked"}`);
-    printLine(`Findings: ${result.session.findings}`);
-  } else {
+  if (!result.session.active) {
     printLine("Session: none. Run `scout init <spec>` to start.");
+    return;
   }
 
-  printLine(`Authenticated: ${result.authenticated ? "yes" : "no"}`);
-  printLine(`API key source: ${result.apiKeySource}`);
-  printLine(`TESTERARMY_API_KEY: ${result.environmentApiKeySet ? "set" : "not set"}`);
-  printLine(`Stored config API key: ${result.configApiKeySet ? "set" : "not set"}`);
-  printLine(`Config file: ${result.configPath}`);
-
-  if (!result.authenticated) {
-    printLine("TesterArmy auth is optional. Scout is fully functional unauthenticated.");
+  printLine(`Run: ${result.session.runId}`);
+  printLine(`Spec: ${result.session.specSource}`);
+  printLine(`Base URL: ${result.session.baseUrl ?? "unknown"}`);
+  printLine(`Requests used: ${result.session.requestsUsed}/${result.session.requestBudget}`);
+  printLine(`Rate limit: ${result.session.rateLimit} req/s`);
+  printLine(`Mutations: ${result.session.allowMutations ? "allowed" : "blocked"}`);
+  if (result.session.allowedMethods) {
+    printLine(`Allowed methods: ${result.session.allowedMethods.join(", ")}`);
   }
-
-  await captureStatusTelemetry();
+  if (result.session.allowedPaths) {
+    printLine(`Allowed paths: ${result.session.allowedPaths.join(", ")}`);
+  }
+  printLine(`Findings: ${result.session.findings}`);
 }

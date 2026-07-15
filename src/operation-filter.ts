@@ -1,5 +1,6 @@
 import picomatch from "picomatch";
 import { ScoutError } from "./errors.js";
+import type { ResolvedPolicy } from "./project-config.js";
 import { HTTP_METHODS, type HttpMethod, type SpecOperation } from "./spec-loader.js";
 
 export type OperationFilter = {
@@ -8,6 +9,22 @@ export type OperationFilter = {
   method?: string;
   search?: string;
 };
+
+/** Restricts an operation set to the configured authorization scope. */
+export function scopeOperations(
+  operations: SpecOperation[],
+  policy: Pick<ResolvedPolicy, "allowedMethods" | "allowedPaths">,
+): SpecOperation[] {
+  return operations.filter(
+    (operation) =>
+      (!policy.allowedMethods ||
+        policy.allowedMethods.some(
+          (method) => method.toUpperCase() === operation.method.toUpperCase(),
+        )) &&
+      (!policy.allowedPaths ||
+        policy.allowedPaths.some((pattern) => picomatch(pattern)(operation.path))),
+  );
+}
 
 /** Parses a --method flag value to a supported HTTP method. */
 export function parseMethod(value: string): HttpMethod {

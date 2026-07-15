@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { filterOperations, parseMethod, resolveOperationsOrThrow } from "./operation-filter.js";
+import {
+  filterOperations,
+  parseMethod,
+  resolveOperationsOrThrow,
+  scopeOperations,
+} from "./operation-filter.js";
 import type { SpecOperation } from "./spec-loader.js";
 
 function op(overrides: Partial<SpecOperation>): SpecOperation {
@@ -51,6 +56,16 @@ describe("parseMethod", () => {
 
   it("rejects unknown methods", () => {
     expect(() => parseMethod("connectx")).toThrow(/--method must be one of/);
+  });
+});
+
+describe("scopeOperations", () => {
+  it("applies method and OpenAPI path scope", () => {
+    expect(
+      scopeOperations(operations, { allowedMethods: ["GET"], allowedPaths: ["/pets"] }).map(
+        (operation) => `${operation.method} ${operation.path}`,
+      ),
+    ).toEqual(["get /pets"]);
   });
 });
 

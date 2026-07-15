@@ -4,10 +4,8 @@ import { fileURLToPath } from "node:url";
 import { cancel, isCancel, log } from "@clack/prompts";
 import { Command, Option } from "commander";
 import { runAgentInitCommand, type AgentInitOptions } from "./agent-command.js";
-import { runAuthCommand, runSignoutCommand, type AuthOptions } from "./auth-command.js";
 import { runCallCommand, type CallOptions } from "./call-command.js";
 import { runCoverageCommand, type CoverageOptions } from "./coverage-command.js";
-import { runDocsCommand, type DocsOptions } from "./docs-command.js";
 import { runEndpointsCommand, type EndpointsOptions } from "./endpoints-command.js";
 import {
   isJsonOutputRequested,
@@ -17,22 +15,29 @@ import {
 } from "./errors.js";
 import {
   runFindingAddCommand,
+  runFindingConfirmCommand,
+  runFindingDismissCommand,
   runFindingListCommand,
   type FindingAddOptions,
+  type FindingLifecycleOptions,
   type FindingListOptions,
 } from "./finding-command.js";
+import { runFuzzCommand, type FuzzOptions } from "./fuzz-command.js";
 import { runInitCommand, type InitOptions } from "./init-command.js";
+import { stringifyJson } from "./output.js";
 import { runReportCommand, type ReportOptions } from "./report-command.js";
+import { runResetCommand, type ResetOptions } from "./reset-command.js";
 import { runSchemaCommand, type SchemaOptions } from "./schema-command.js";
 import { runStatusCommand, type StatusCommandOptions } from "./status-command.js";
 import { runSweepCommand, type SweepOptions } from "./sweep-command.js";
+import { runVarsCommand, type VarsOptions } from "./vars-command.js";
 import { getCliVersion } from "./version.js";
 
 // Set up global error handlers IMMEDIATELY before any other code runs
 process.on("unhandledRejection", (error) => {
   const message = toErrorMessage(error);
   if (isJsonOutputRequested()) {
-    console.error(JSON.stringify(toJsonErrorEnvelope(error, 2), null, 2));
+    console.error(stringifyJson(toJsonErrorEnvelope(error, 2)));
   } else {
     console.error("\nError:", message, "\n");
   }
@@ -42,16 +47,11 @@ process.on("unhandledRejection", (error) => {
 process.on("uncaughtException", (error) => {
   const message = toErrorMessage(error);
   if (isJsonOutputRequested()) {
-    console.error(JSON.stringify(toJsonErrorEnvelope(error, 2), null, 2));
+    console.error(stringifyJson(toJsonErrorEnvelope(error, 2)));
   } else {
     console.error("\nError:", message, "\n");
   }
   process.exit(2);
-});
-
-// Ignore SIGHUP to allow running in background with `&`
-process.on("SIGHUP", () => {
-  console.log("Received SIGHUP, continuing in background...");
 });
 
 let activeCommandJsonOutput = false;
@@ -66,7 +66,7 @@ function handleError(error: unknown, exitCode = 2): never {
   const json = shouldOutputJsonError();
   if (isUserCancelledError(error) || isCancel(error)) {
     if (json) {
-      console.error(JSON.stringify(toJsonErrorEnvelope(error, 1), null, 2));
+      console.error(stringifyJson(toJsonErrorEnvelope(error, 1)));
     } else {
       cancel("Cancelled");
     }
@@ -75,7 +75,7 @@ function handleError(error: unknown, exitCode = 2): never {
 
   const message = toErrorMessage(error);
   if (json) {
-    console.error(JSON.stringify(toJsonErrorEnvelope(error, exitCode), null, 2));
+    console.error(stringifyJson(toJsonErrorEnvelope(error, exitCode)));
   } else if (process.stdin.isTTY && process.stdout.isTTY) {
     log.error(message);
   } else {
@@ -141,9 +141,9 @@ Examples:
       [],
     )
     .option("--allow-mutations", "allow POST/PUT/PATCH/DELETE requests")
-    .option("--allow-host <host>", "additional allowlisted host", collect, [])
+    .option("--allow-method <method>", "scope requests to an HTTP method", collect, [])
+    .option("--allow-path <glob>", "scope requests to an OpenAPI path glob", collect, [])
     .option("--discover", "probe well-known paths for a spec under --base-url")
-    .option("--config <path>", "path to scout.json")
     .option("--json", "output as JSON")
     .addHelpText(
       "after",
@@ -165,12 +165,25 @@ Examples:
 
   program
     .command("status")
-    .description("show session and TesterArmy auth status")
+    .description("show local project and run status")
     .option("--json", "output as JSON")
     .addHelpText("after", "\nExamples:\n  scout status\n  scout status --json\n")
     .action(async (options: StatusCommandOptions) => {
       try {
         await runStatusCommand(options);
+      } catch (error) {
+        handleError(error, 2);
+      }
+    });
+
+  program
+    .command("reset")
+    .alias("new-run")
+    .description("start a clean run while preserving config and cached spec")
+    .option("--json", "output as JSON")
+    .action((options: ResetOptions) => {
+      try {
+        runResetCommand(options);
       } catch (error) {
         handleError(error, 2);
       }
@@ -262,7 +275,21 @@ Examples:
         "replace credentials with deterministic invalid values",
       ).conflicts("auth"),
     )
-    .option("--config <path>", "path to scout.json")
+    .option("--allow-undocumented", "allow an operation absent from the OpenAPI spec")
+    .option("--auth-profile <name>", "target auth profile from scout.json")
+    .option(
+      "--capture <name=path>",
+      "capture a response-body value into a session variable",
+      collect,
+      [],
+    )
+    .addOption(
+      new Option(
+        "--extract <path>",
+        "print one response-body value (for shell capture) and nothing else",
+      ).conflicts("json"),
+    )
+    .option("--fail-on-verdict", "exit 1 when the response verdict fails")
     .option("--json", "output as JSON")
     .addHelpText(
       "after",
@@ -275,6 +302,9 @@ Examples:
   scout call POST /users --raw-data '{"malformed":' --json
   scout call GET /admin --no-auth --json
   scout call GET /admin --invalid-auth --json
+  scout call POST /users --data '{"name":"Ada"}' --capture userId=user.id --json
+  scout call GET /users/{id} --path-param id={{userId}} --json
+  ID=$(scout call POST /users --data '{"name":"Ada"}' --extract user.id)
 `,
     )
     .action(async (method: string, path: string, options: CallOptions) => {
@@ -286,14 +316,29 @@ Examples:
     });
 
   program
+    .command("vars")
+    .description("list or clear captured session variables")
+    .option("--clear", "remove all captured variables")
+    .option("--json", "output as JSON")
+    .action((options: VarsOptions) => {
+      try {
+        runVarsCommand(options);
+      } catch (error) {
+        handleError(error, 2);
+      }
+    });
+
+  program
     .command("sweep")
     .description("deterministic no-LLM baseline pass; auto-records findings")
     .option("--tag <tag>", "filter by tag")
     .option("--path <glob>", "filter by path glob")
     .option("--method <method>", "filter by HTTP method")
+    .option("--search <query>", "filter by free-text search")
     .option("--max-requests <n>", "cap probes", parseIntOption("--max-requests"))
     .option("--no-auth-probes", "skip missing/invalid credential probes")
-    .option("--config <path>", "path to scout.json")
+    .option("--dry-run", "show the probe plan without sending requests")
+    .option("--auth-profile <name>", "target auth profile from scout.json")
     .option("--json", "output as JSON")
     .addHelpText(
       "after",
@@ -302,6 +347,51 @@ Examples:
     .action(async (options: SweepOptions) => {
       try {
         await runSweepCommand(options);
+      } catch (error) {
+        handleError(error, 2);
+      }
+    });
+
+  program
+    .command("fuzz")
+    .description("generate and execute schema-driven negative request-body cases")
+    .argument("<method>", "HTTP method")
+    .argument("<path>", "operation path, e.g. /users/{id}")
+    .option("--path-param <kv>", "path parameter key=value", collect, [])
+    .option("--query <kv>", "query parameter key=value", collect, [])
+    .option("--header <kv>", "extra header Name:Value", collect, [])
+    .addOption(new Option("--data <json>", "known-valid baseline JSON body").conflicts("dataStdin"))
+    .addOption(
+      new Option("--data-stdin", "read known-valid baseline JSON from stdin").conflicts("data"),
+    )
+    .option(
+      "--max-cases <n>",
+      "cap generated cases, hard maximum 100 (default: 25)",
+      parseIntOption("--max-cases"),
+    )
+    .option("--case <id>", "execute one stable case ID from --dry-run")
+    .option(
+      "--oversized-length <n>",
+      "unbounded string size, capped internally at 65536 (default: 4096)",
+      parseIntOption("--oversized-length"),
+    )
+    .option("--dry-run", "show case metadata without sending requests")
+    .option("--auth-profile <name>", "target auth profile from scout.json")
+    .option("--json", "output as JSON")
+    .addHelpText(
+      "after",
+      `
+Examples:
+  scout fuzz POST /users --dry-run --json
+  scout fuzz POST /users --data '{"name":"scout-test"}' --max-cases 20 --json
+  cat baseline.json | scout fuzz PATCH /users/{id} --path-param id=123 --data-stdin --json
+
+Fuzzing may create side effects when invalid input is accepted. Mutations must be enabled and explicitly authorized.
+`,
+    )
+    .action(async (method: string, path: string, options: FuzzOptions) => {
+      try {
+        await runFuzzCommand(method, path, options);
       } catch (error) {
         handleError(error, 2);
       }
@@ -360,6 +450,32 @@ Examples:
     });
 
   findingCommand
+    .command("confirm")
+    .description("confirm a candidate finding")
+    .argument("<id>", "finding id")
+    .option("--json", "output as JSON")
+    .action(async (id: string, options: FindingLifecycleOptions) => {
+      try {
+        await runFindingConfirmCommand(id, options);
+      } catch (error) {
+        handleError(error, 2);
+      }
+    });
+
+  findingCommand
+    .command("dismiss")
+    .description("dismiss a finding so it does not gate reports")
+    .argument("<id>", "finding id")
+    .option("--json", "output as JSON")
+    .action(async (id: string, options: FindingLifecycleOptions) => {
+      try {
+        await runFindingDismissCommand(id, options);
+      } catch (error) {
+        handleError(error, 2);
+      }
+    });
+
+  findingCommand
     .command("list")
     .description("list recorded findings")
     .option("--json", "output as JSON")
@@ -376,8 +492,15 @@ Examples:
     .description("compile findings + coverage into a report")
     .option("--md <file>", "write Markdown report to a file")
     .option("--json-file <file>", "write JSON report to a file")
-    .option("--ci", "exit non-zero when findings at/above the threshold exist")
+    .option("--ci", "exit non-zero when findings or completeness gates fail")
     .option("--severity-threshold <severity>", "CI gate threshold (default: high)")
+    .option(
+      "--min-coverage <percent>",
+      "minimum operation coverage percentage",
+      parseIntOption("--min-coverage"),
+    )
+    .option("--require-probes", "require at least one sweep probe")
+    .option("--no-require-probes", "allow a completed run with zero sweep probes")
     .option("--json", "output as JSON")
     .addHelpText(
       "after",
@@ -403,60 +526,15 @@ Examples:
 
   agentCommand
     .command("init")
-    .description("install the public scout skill and write AGENTS.md discovery hints")
+    .description("install the bundled scout skill and write AGENTS.md discovery hints")
     .option("--json", "output as JSON")
-    .option("--skip-skill-install", "only write AGENTS.md; do not run npx skills add")
+    .option("--skip-skill-install", "only write AGENTS.md")
     .option("--skip-agents-md", "only install the public skill; do not write AGENTS.md")
     .action(async (options: AgentInitOptions) => {
       try {
         await runAgentInitCommand(options);
       } catch (error) {
         handleError(error, 2);
-      }
-    });
-
-  program
-    .command("docs")
-    .description("show agent-friendly scout docs")
-    .argument("[topic]", "docs topic")
-    .option("--json", "output as JSON")
-    .addHelpText(
-      "after",
-      "\nExamples:\n  scout docs\n  scout docs workflow\n  scout docs call --json\n",
-    )
-    .action(async (topic: string | undefined, options: DocsOptions) => {
-      try {
-        await runDocsCommand(topic, options);
-      } catch (error) {
-        handleError(error, 2);
-      }
-    });
-
-  const authCommand = program
-    .command("auth")
-    .description("save Tester Army API key to local config (optional; enables usage attribution)")
-    .option("--api-key <key>", "Tester Army API key")
-    .option("--base-url <url>", "Tester Army API base URL")
-    .addHelpText(
-      "after",
-      "\nExamples:\n  scout auth\n  scout auth --api-key <key>\n  scout auth signout\n",
-    )
-    .action(async (options: AuthOptions) => {
-      try {
-        await runAuthCommand(options);
-      } catch (error) {
-        handleError(error, 1);
-      }
-    });
-
-  authCommand
-    .command("signout")
-    .description("remove Tester Army API key from local config")
-    .action(async () => {
-      try {
-        await runSignoutCommand();
-      } catch (error) {
-        handleError(error, 1);
       }
     });
 

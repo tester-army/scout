@@ -1,71 +1,69 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  captureCliCommandEvent: vi.fn(),
-  getConfigFilePath: vi.fn(),
   isInteractive: vi.fn(),
-  loadCliConfig: vi.fn(),
+  loadProjectConfig: vi.fn(),
+  loadSessionState: vi.fn(),
+  readFindings: vi.fn(),
+  resolvePolicy: vi.fn(),
+  sessionExists: vi.fn(),
 }));
 
-vi.mock("./cli-analytics.js", () => ({
-  captureCliCommandEvent: mocks.captureCliCommandEvent,
+vi.mock("./utils.js", () => ({ isInteractive: mocks.isInteractive }));
+vi.mock("./project-config.js", () => ({
+  loadProjectConfig: mocks.loadProjectConfig,
+  resolvePolicy: mocks.resolvePolicy,
 }));
-
-vi.mock("./config-store.js", () => ({
-  getConfigFilePath: mocks.getConfigFilePath,
-  loadCliConfig: mocks.loadCliConfig,
+vi.mock("./session-store.js", () => ({
+  loadSessionState: mocks.loadSessionState,
+  sessionExists: mocks.sessionExists,
 }));
-
-vi.mock("./utils.js", () => ({
-  isInteractive: mocks.isInteractive,
-}));
+vi.mock("./findings.js", () => ({ readFindings: mocks.readFindings }));
 
 const { runStatusCommand } = await import("./status-command.js");
 
 describe("status command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.unstubAllEnvs();
-    mocks.captureCliCommandEvent.mockResolvedValue(undefined);
-    mocks.getConfigFilePath.mockReturnValue("/home/user/.config/testerarmy/config.json");
     mocks.isInteractive.mockReturnValue(false);
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
 
-  it("reports unauthenticated state as JSON in non-TTY", async () => {
-    vi.stubEnv("TESTERARMY_API_KEY", "");
-    mocks.loadCliConfig.mockResolvedValue({});
-
-    await runStatusCommand({});
-
+  it("reports no local run without account state", async () => {
+    mocks.sessionExists.mockReturnValue(false);
+    await runStatusCommand({ json: true });
     expect(JSON.parse(vi.mocked(console.log).mock.calls[0]?.[0] as string)).toEqual({
-      authenticated: false,
-      apiKeySource: "none",
-      environmentApiKeySet: false,
-      configApiKeySet: false,
-      configPath: "/home/user/.config/testerarmy/config.json",
       session: { active: false },
     });
   });
 
-  it("prefers environment API key over stored config", async () => {
-    vi.stubEnv("TESTERARMY_API_KEY", "ta_env_key");
-    mocks.loadCliConfig.mockResolvedValue({ apiKey: "ta_config_key" });
+  it("reports local run policy and provenance", async () => {
+    mocks.sessionExists.mockReturnValue(true);
+    mocks.loadSessionState.mockReturnValue({
+      runId: "run-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      specSource: "openapi.json",
+      specHash: "hash",
+      requestCount: 3,
+    });
+    mocks.loadProjectConfig.mockReturnValue({
+      config: { spec: "openapi.json", baseUrl: "https://api.test" },
+      path: "scout.json",
+    });
+    mocks.resolvePolicy.mockReturnValue({ allowMutations: false, rateLimit: 2, budget: 20 });
+    mocks.readFindings.mockReturnValue([{}]);
 
     await runStatusCommand({ json: true });
 
     expect(JSON.parse(vi.mocked(console.log).mock.calls[0]?.[0] as string)).toMatchObject({
-      authenticated: true,
-      apiKeySource: "environment",
-      environmentApiKeySet: true,
-      configApiKeySet: true,
-    });
-    expect(mocks.captureCliCommandEvent).toHaveBeenCalledWith({
-      command: "status",
-      properties: {
-        authenticated: true,
-        api_key_source: "environment",
-        output_format: "json",
+      session: {
+        active: true,
+        runId: "run-1",
+        baseUrl: "https://api.test",
+        requestsUsed: 3,
+        requestBudget: 20,
+        rateLimit: 2,
+        findings: 1,
       },
     });
   });

@@ -93,7 +93,11 @@ export function reportIncompleteReasons(input: ReportInput): string[] {
   if (input.provenance.requestTotals.session !== input.provenance.requestTotals.recorded) {
     reasons.push("request-log-incomplete");
   }
-  if (input.coverage.coveragePercent < minCoverage) reasons.push("coverage-below-minimum");
+  const exactCoverage =
+    input.coverage.totalOperations === 0
+      ? 0
+      : (input.coverage.exercised / input.coverage.totalOperations) * 100;
+  if (exactCoverage < minCoverage) reasons.push("coverage-below-minimum");
   if (input.requireProbes && input.provenance.requestTotals.probes === 0) {
     reasons.push("no-probes-recorded");
   }

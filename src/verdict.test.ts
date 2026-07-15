@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { SpecOperation } from "./spec-loader.js";
-import { buildVerdict, mediaTypeMatches, selectResponseSpec } from "./verdict.js";
+import {
+  buildVerdict,
+  mediaTypeMatches,
+  selectResponseSpec,
+  validateSchemaValue,
+} from "./verdict.js";
 
 function operation(overrides: Partial<SpecOperation> = {}): SpecOperation {
   return {
@@ -49,6 +54,29 @@ describe("mediaTypeMatches", () => {
     expect(mediaTypeMatches("application/json", "application/problem+json")).toBe(false);
     expect(mediaTypeMatches("application/*+json", "application/problem+json")).toBe(true);
     expect(mediaTypeMatches("application/*", "application/json")).toBe(true);
+  });
+});
+
+describe("validateSchemaValue", () => {
+  it("validates request values with OpenAPI 3.0 nullable support", () => {
+    const schema = {
+      type: "object",
+      required: ["name"],
+      properties: { name: { type: "string", nullable: true } },
+    };
+    expect(validateSchemaValue(schema, "3.0.3", { name: null })).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(validateSchemaValue(schema, "3.0.3", {})).toMatchObject({ valid: false });
+  });
+
+  it("supports JSON Schema boolean schemas", () => {
+    expect(validateSchemaValue(true, "3.1.0", { anything: true })).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(validateSchemaValue(false, "3.1.0", null)).toMatchObject({ valid: false });
   });
 });
 

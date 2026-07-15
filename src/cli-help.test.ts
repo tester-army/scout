@@ -42,16 +42,17 @@ describe("CLI help", () => {
     for (const expected of [
       "init",
       "status",
+      "reset",
       "endpoints",
       "schema",
       "call",
+      "vars",
       "sweep",
+      "fuzz",
       "coverage",
       "finding",
       "report",
       "agent",
-      "docs",
-      "auth",
     ]) {
       expect(commandNames).toContain(expected);
     }
@@ -73,6 +74,9 @@ describe("CLI help", () => {
     expect(help).toContain("--no-auth");
     expect(help).toContain("--invalid-auth");
     expect(help).toContain("--expect");
+    expect(help).toContain("--allow-undocumented");
+    expect(help).toContain("--auth-profile");
+    expect(help).toContain("--fail-on-verdict");
   });
 
   it.each([
@@ -92,25 +96,31 @@ describe("CLI help", () => {
   });
 
   it("documents sweep and report gates", () => {
-    expect(renderHelp(getCommand("sweep"))).toContain("--no-auth-probes");
+    const sweep = renderHelp(getCommand("sweep"));
+    expect(sweep).toContain("--no-auth-probes");
+    expect(sweep).toContain("--dry-run");
     const report = renderHelp(getCommand("report"));
     expect(report).toContain("--ci");
     expect(report).toContain("--severity-threshold");
+    expect(report).toContain("--min-coverage");
+  });
+
+  it("documents schema-driven fuzzing controls", () => {
+    const help = renderHelp(getCommand("fuzz"));
+    expect(help).toContain("--dry-run");
+    expect(help).toContain("--data-stdin");
+    expect(help).toContain("--max-cases");
+    expect(help).toContain("--case");
+    expect(help).toContain("--oversized-length");
+    expect(help).toContain("may create side effects");
   });
 
   it("documents finding subcommands", () => {
     const finding = getCommand("finding");
     expect(getNestedCommand(finding, "add").description()).toContain("record a finding");
     expect(getNestedCommand(finding, "list").description()).toContain("list recorded findings");
-  });
-
-  it("documents auth flow including signout subcommand", () => {
-    const auth = getCommand("auth");
-    const help = renderHelp(auth);
-
-    expect(help).toContain("--api-key <key>");
-    expect(help).toContain("scout auth signout");
-    expect(getNestedCommand(auth, "signout").description()).toContain("remove Tester Army API key");
+    expect(getNestedCommand(finding, "confirm").description()).toContain("confirm a candidate");
+    expect(getNestedCommand(finding, "dismiss").description()).toContain("dismiss a finding");
   });
 
   it("detects CLI execution through a symlinked bin path", () => {

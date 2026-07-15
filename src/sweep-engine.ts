@@ -7,12 +7,7 @@ import {
   type FindingCategory,
   type FindingSeverity,
 } from "./findings.js";
-import {
-  executeCall,
-  RateLimiter,
-  type CallResult,
-  type ExecutorContext,
-} from "./http-executor.js";
+import { executeCall, type CallResult, type ExecutorContext } from "./http-executor.js";
 import { getSessionDirPath, loadSessionState } from "./session-store.js";
 import { operationKey, SAFE_METHODS, type SpecOperation } from "./spec-loader.js";
 
@@ -79,6 +74,7 @@ export type SweepRunRecord = {
 };
 
 export type SweepSummary = {
+  runId: string;
   probesPlanned: number;
   probesRunnable: number;
   probesRun: number;
@@ -496,6 +492,7 @@ export async function runSweep(
 
   if (options.dryRun) {
     return {
+      runId: stateBefore.runId,
       probesPlanned: plan.entries.length,
       probesRunnable: cappedPlan.selected.length,
       probesRun: 0,
@@ -509,7 +506,6 @@ export async function runSweep(
     };
   }
 
-  const rateLimiter = new RateLimiter(context.policy.rateLimit);
   const findings: Finding[] = [];
   let probesRun = 0;
   let stopReason: Exclude<SweepStopReason, "dry-run"> = "completed";
@@ -523,19 +519,15 @@ export async function runSweep(
   for (const entry of cappedPlan.selected) {
     let result: CallResult;
     try {
-      result = await executeCall(
-        context,
-        {
-          method: entry.operation.method,
-          path: entry.operation.path,
-          source: "sweep",
-          ...(entry.pathParams ? { pathParams: entry.pathParams } : {}),
-          ...(entry.noAuth ? { noAuth: true } : {}),
-          ...(entry.invalidAuth ? { invalidAuth: true } : {}),
-          ...(entry.expect !== undefined ? { expect: entry.expect } : {}),
-        },
-        rateLimiter,
-      );
+      result = await executeCall(context, {
+        method: entry.operation.method,
+        path: entry.operation.path,
+        source: "sweep",
+        ...(entry.pathParams ? { pathParams: entry.pathParams } : {}),
+        ...(entry.noAuth ? { noAuth: true } : {}),
+        ...(entry.invalidAuth ? { invalidAuth: true } : {}),
+        ...(entry.expect !== undefined ? { expect: entry.expect } : {}),
+      });
     } catch (error) {
       if (error instanceof ScoutError && error.code === "BUDGET_EXCEEDED") {
         stopReason = "budget-exhausted";
@@ -570,6 +562,7 @@ export async function runSweep(
   );
 
   return {
+    runId: stateBefore.runId,
     probesPlanned: plan.entries.length,
     probesRunnable: cappedPlan.selected.length,
     probesRun,

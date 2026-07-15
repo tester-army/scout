@@ -1,4 +1,7 @@
 import { ScoutError } from "./errors.js";
+import { scopeOperations } from "./operation-filter.js";
+import { stringifyJson } from "./output.js";
+import { loadProjectConfigOrThrow, resolvePolicy } from "./project-config.js";
 import { loadCachedSpec } from "./session-store.js";
 import { extractOperations, operationKey, parseHttpMethodArg } from "./spec-loader.js";
 
@@ -52,7 +55,8 @@ export async function runSchemaCommand(
   options: SchemaOptions,
 ): Promise<void> {
   const loadedSpec = loadCachedSpec();
-  const operations = extractOperations(loadedSpec.spec);
+  const { config } = loadProjectConfigOrThrow();
+  const operations = scopeOperations(extractOperations(loadedSpec.spec), resolvePolicy(config));
   const normalizedMethod = parseHttpMethodArg(method);
 
   const operation = operations.find((op) => op.method === normalizedMethod && op.path === path);
@@ -87,5 +91,5 @@ export async function runSchemaCommand(
       : {}),
   };
 
-  console.log(JSON.stringify(detail, null, 2));
+  console.log(stringifyJson(detail));
 }
