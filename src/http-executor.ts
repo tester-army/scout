@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { DEFAULT_REQUEST_TIMEOUT_MS } from "./constants.js";
+import {
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  MAX_RESPONSE_DOWNLOAD_BYTES,
+  MAX_RESPONSE_PREVIEW_BYTES,
+} from "./constants.js";
 import { ScoutError } from "./errors.js";
 import {
   loadProjectConfigOrThrow,
@@ -54,6 +58,7 @@ export type CallRequest = {
   expect?: number;
   source: "call" | "sweep";
   timeoutMs?: number;
+  allowUndocumented?: boolean;
 };
 
 export type CallResult = {
@@ -68,8 +73,10 @@ export type CallResult = {
   response: {
     status: number;
     contentType?: string;
+    headers: Record<string, string>;
     body: unknown;
     bodyIsJson: boolean;
+    bodyTruncated: boolean;
   };
   verdict: Verdict;
 };
@@ -93,6 +100,19 @@ export class RateLimiter {
       await new Promise((resolveWait) => setTimeout(resolveWait, waitMs));
     }
   }
+}
+
+const sharedRateLimiters = new Map<string, { rate: number; limiter: RateLimiter }>();
+
+/** Returns the process-wide limiter for a project and target. */
+function getSharedRateLimiter(context: ExecutorContext): RateLimiter {
+  const key = `${context.cwd}\0${context.config.baseUrl}`;
+  const existing = sharedRateLimiters.get(key);
+  if (existing?.rate === context.policy.rateLimit) return existing.limiter;
+
+  const limiter = new RateLimiter(context.policy.rateLimit);
+  sharedRateLimiters.set(key, { rate: context.policy.rateLimit, limiter });
+  return limiter;
 }
 
 /** Loads config + cached spec into a ready-to-execute context. */
@@ -219,7 +239,8 @@ function assertMethodAllowed(method: HttpMethod, policy: ResolvedPolicy): void {
   });
 }
 
-function assertBudgetAvailable(cwd: string, policy: ResolvedPolicy): void {
+/** Reserves one request from the session budget before any asynchronous work. */
+function reserveBudget(cwd: string, policy: ResolvedPolicy): void {
   const state = loadSessionState(cwd);
   if (state.requestCount >= policy.budget) {
     throw new ScoutError(
@@ -230,6 +251,7 @@ function assertBudgetAvailable(cwd: string, policy: ResolvedPolicy): void {
       },
     );
   }
+  incrementRequestCount(cwd);
 }
 
 function redactRecordValue(value: string, secrets: string[]): string {
@@ -313,6 +335,96 @@ function truncateBody(body: string): string {
     : body;
 }
 
+/** Reads a response stream up to the hard byte cap and cancels overflow. */
+async function readResponseBody(
+  response: Response,
+  abortController: AbortController,
+): Promise<{ body: string; truncated: boolean }> {
+  if (!response.body) return { body: "", truncated: false };
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parts: string[] = [];
+  let bytesRead = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      parts.push(decoder.decode());
+      return { body: parts.join(""), truncated: false };
+    }
+
+    const remaining = MAX_RESPONSE_DOWNLOAD_BYTES - bytesRead;
+    if (value.byteLength <= remaining) {
+      bytesRead += value.byteLength;
+      parts.push(decoder.decode(value, { stream: true }));
+      continue;
+    }
+
+    if (remaining > 0) {
+      parts.push(decoder.decode(value.subarray(0, remaining), { stream: true }));
+    }
+    parts.push(decoder.decode());
+    abortController.abort(new Error("Response body download limit exceeded."));
+    await reader.cancel("Response body download limit exceeded.").catch(() => undefined);
+    return { body: parts.join(""), truncated: true };
+  }
+}
+
+/** Truncates a UTF-8 string without exceeding the preview byte cap. */
+function createTextPreview(value: string): { value: string; truncated: boolean } {
+  const encoded = new TextEncoder().encode(value);
+  if (encoded.byteLength <= MAX_RESPONSE_PREVIEW_BYTES) {
+    return { value, truncated: false };
+  }
+  return {
+    value: new TextDecoder().decode(encoded.subarray(0, MAX_RESPONSE_PREVIEW_BYTES)),
+    truncated: true,
+  };
+}
+
+/** Redacts a Set-Cookie value while preserving its name and attributes. */
+function redactSetCookie(value: string, secrets: string[]): string {
+  const [cookiePair = "", ...attributes] = value.split(";");
+  const separator = cookiePair.indexOf("=");
+  const name = (separator === -1 ? cookiePair : cookiePair.slice(0, separator)).trim();
+  const redactedPair = `${name}=[redacted]`;
+  const redactedAttributes = attributes.map((attribute) =>
+    redactSecretsOnly(attribute.trim(), secrets),
+  );
+  return [redactedPair, ...redactedAttributes].filter(Boolean).join("; ");
+}
+
+/**
+ * Collects every response header into a plain object so agents can audit the
+ * full response surface (e.g. `set-cookie`, `x-powered-by`, `server` leaks).
+ * The tester's own secrets are stripped from values; headers whose name looks
+ * like a credential are masked to `[redacted]` while the key is preserved so
+ * the presence of the leak stays visible.
+ */
+function collectResponseHeaders(
+  responseHeaders: Headers,
+  secrets: string[],
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  responseHeaders.forEach((value, name) => {
+    result[name] = SECRETISH_HEADER_RE.test(name)
+      ? "[redacted]"
+      : redactSecretsOnly(value, secrets);
+  });
+
+  const setCookies =
+    typeof responseHeaders.getSetCookie === "function" ? responseHeaders.getSetCookie() : [];
+  if (setCookies.length > 0) {
+    result["set-cookie"] = setCookies.map((value) => redactSetCookie(value, secrets)).join(", ");
+  } else {
+    const setCookie = responseHeaders.get("set-cookie");
+    if (setCookie) result["set-cookie"] = redactSetCookie(setCookie, secrets);
+  }
+
+  return result;
+}
+
 /**
  * Executes one instrumented request against the target API: guardrails,
  * env-ref auth injection, verdict, redacted evidence log, budget counter.
@@ -334,6 +446,22 @@ export async function executeCall(
   }
 
   const match = matchOperation(context.operations, request.method, request.path);
+  if (!match && !request.allowUndocumented) {
+    const documentedMethods = context.operations
+      .filter((candidate) => matchOperation([candidate], candidate.method, request.path))
+      .map((candidate) => candidate.method.toUpperCase());
+    const detail =
+      documentedMethods.length > 0
+        ? ` The path exists for: ${documentedMethods.join(", ")}.`
+        : " The path is not present in the loaded spec.";
+    throw new ScoutError(
+      `Refusing undocumented request ${request.method.toUpperCase()} ${request.path}.${detail}`,
+      {
+        code: "NOT_FOUND",
+        hint: "Use a method and path from `scout endpoints`. Undocumented requests require explicit opt-in.",
+      },
+    );
+  }
   const operation = match?.operation ?? null;
   const authHeaderNames = new Set(
     operation?.authParameters
@@ -398,7 +526,6 @@ export async function executeCall(
 
   assertHostAllowed(url, context.config);
   assertMethodAllowed(request.method, context.policy);
-  assertBudgetAvailable(context.cwd, context.policy);
 
   const headers: Record<string, string> = {};
   const syntheticCredentialHeaders = new Set<string>();
@@ -511,22 +638,24 @@ export async function executeCall(
     headers["Content-Type"] = "application/json";
   }
 
-  if (rateLimiter) {
-    await rateLimiter.take();
-  }
+  reserveBudget(context.cwd, context.policy);
+  await (rateLimiter ?? getSharedRateLimiter(context)).take();
 
   const startedAt = performance.now();
+  const downloadController = new AbortController();
   let response: Response;
   try {
     response = await fetch(url, {
       method: request.method.toUpperCase(),
       headers,
       body: serializedBody,
-      signal: AbortSignal.timeout(request.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.any([
+        AbortSignal.timeout(request.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
+        downloadController.signal,
+      ]),
       redirect: "manual",
     });
   } catch (error) {
-    incrementRequestCount(context.cwd);
     throw new Error(
       redactRecordValue(
         `Request to ${url.host} failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -537,17 +666,32 @@ export async function executeCall(
   }
   const latencyMs = Math.round(performance.now() - startedAt);
 
-  const rawBody = await response.text().catch(() => "");
+  let downloadedBody: { body: string; truncated: boolean };
+  try {
+    downloadedBody = await readResponseBody(response, downloadController);
+  } catch (error) {
+    throw new Error(
+      redactRecordValue(
+        `Failed to read response from ${url.host}: ${error instanceof Error ? error.message : String(error)}`,
+        secrets,
+      ),
+      { cause: error },
+    );
+  }
+  const rawBody = downloadedBody.body;
   let body: unknown = rawBody;
   let bodyIsJson = false;
-  try {
-    body = JSON.parse(rawBody);
-    bodyIsJson = true;
-  } catch {
-    // keep raw text
+  if (!downloadedBody.truncated) {
+    try {
+      body = JSON.parse(rawBody);
+      bodyIsJson = true;
+    } catch {
+      // keep raw text
+    }
   }
 
   const contentType = response.headers.get("content-type") ?? undefined;
+  const responseHeaders = collectResponseHeaders(response.headers, secrets);
   const verdict = buildVerdict({
     operation,
     specVersion: context.loadedSpec.specVersion,
@@ -572,6 +716,7 @@ export async function executeCall(
   );
 
   const redactedUrl = redactUrl(url.toString(), secrets, authQueryNames);
+  const redactedRawBody = redactRecordValue(rawBody, secrets);
 
   const record: RequestRecord = {
     id: requestId,
@@ -587,12 +732,20 @@ export async function executeCall(
     ...(hasBody
       ? { requestBody: truncateBody(redactRecordValue(serializedBody ?? "", secrets)) }
       : {}),
-    responseBody: truncateBody(redactRecordValue(rawBody, secrets)),
+    responseBody: truncateBody(redactedRawBody),
     ...(contentType ? { responseContentType: contentType } : {}),
   };
 
-  incrementRequestCount(context.cwd);
   appendRequestRecord(record, context.cwd);
+
+  const redactedResponseBody = bodyIsJson ? redactJsonSecrets(body, secrets) : redactedRawBody;
+  const serializedResponseBody =
+    bodyIsJson && typeof redactedResponseBody !== "string"
+      ? JSON.stringify(redactedResponseBody)
+      : String(redactedResponseBody);
+  const responsePreview = createTextPreview(serializedResponseBody);
+  const responseBody =
+    bodyIsJson && !responsePreview.truncated ? redactedResponseBody : responsePreview.value;
 
   return {
     requestId,
@@ -613,10 +766,10 @@ export async function executeCall(
     response: {
       status: response.status,
       ...(contentType ? { contentType } : {}),
-      body: bodyIsJson
-        ? redactJsonSecrets(body, secrets)
-        : truncateBody(redactRecordValue(rawBody, secrets)),
+      headers: responseHeaders,
+      body: responseBody,
       bodyIsJson,
+      bodyTruncated: downloadedBody.truncated || responsePreview.truncated,
     },
     verdict,
   };

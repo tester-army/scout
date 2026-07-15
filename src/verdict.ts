@@ -35,6 +35,7 @@ type VerdictCore = Omit<Verdict, "ok" | "summary">;
  */
 export function isVerdictOk(verdict: VerdictCore): boolean {
   if (verdict.expectMatched === false) return false;
+  if (verdict.contentTypeMatch === false) return false;
   if (verdict.schemaValid === false) return false;
   // An explicit --expect is a user assertion and wins. Absent one, an
   // unrequested server error or undocumented status fails the verdict.
@@ -71,6 +72,10 @@ export function summarizeVerdict(verdict: VerdictCore): string {
     parts.push(`schema: n/a${verdict.schemaNote ? ` (${verdict.schemaNote})` : ""}`);
   } else {
     parts.push(verdict.schemaValid ? "schema: valid" : "schema: INVALID");
+  }
+
+  if (verdict.contentTypeMatch === false) {
+    parts.push("content-type: MISMATCH");
   }
 
   parts.push(`${verdict.latencyMs}ms`);
@@ -168,6 +173,23 @@ export function selectResponseSpec(
   return null;
 }
 
+function normalizeMediaType(value: string | undefined): string {
+  return (value ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+}
+
+/** Matches a concrete media type against an OpenAPI media range. */
+export function mediaTypeMatches(declared: string, actual: string | undefined): boolean {
+  const [declaredType, declaredSubtype] = normalizeMediaType(declared).split("/");
+  const [actualType, actualSubtype] = normalizeMediaType(actual).split("/");
+  if (!declaredType || !declaredSubtype || !actualType || !actualSubtype) return false;
+  if (declaredType !== "*" && declaredType !== actualType) return false;
+  if (declaredSubtype === "*" || declaredSubtype === actualSubtype) return true;
+  if (declaredSubtype.startsWith("*+")) {
+    return actualSubtype.endsWith(declaredSubtype.slice(1));
+  }
+  return false;
+}
+
 function selectContentSchema(
   response: SpecResponse,
   contentType: string | undefined,
@@ -178,15 +200,9 @@ function selectContentSchema(
     return { schema: undefined, declaredContentTypes };
   }
 
-  const normalized = (contentType ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
-  const exactKey = declaredContentTypes.find((key) => key.toLowerCase() === normalized);
-  if (exactKey) {
-    return { schema: content[exactKey]?.schema, declaredContentTypes };
-  }
-
-  const jsonKey = declaredContentTypes.find((key) => key.toLowerCase().includes("json"));
-  if (normalized.includes("json") && jsonKey) {
-    return { schema: content[jsonKey]?.schema, declaredContentTypes };
+  const matchedKey = declaredContentTypes.find((key) => mediaTypeMatches(key, contentType));
+  if (matchedKey) {
+    return { schema: content[matchedKey]?.schema, declaredContentTypes };
   }
 
   return { schema: undefined, declaredContentTypes };
@@ -261,15 +277,10 @@ function buildVerdictCore(options: {
     selected.response,
     options.contentType,
   );
-  const normalizedContentType = (options.contentType ?? "").split(";")[0]?.trim().toLowerCase();
   const contentTypeMatch: Verdict["contentTypeMatch"] =
     declaredContentTypes.length === 0
       ? "unknown"
-      : declaredContentTypes.some(
-          (key) =>
-            key.toLowerCase() === normalizedContentType ||
-            (key.toLowerCase().includes("json") && (normalizedContentType ?? "").includes("json")),
-        );
+      : declaredContentTypes.some((key) => mediaTypeMatches(key, options.contentType));
 
   if (schema === undefined || schema === null || typeof schema !== "object") {
     return {

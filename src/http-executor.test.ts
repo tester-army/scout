@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_RESPONSE_DOWNLOAD_BYTES, MAX_RESPONSE_PREVIEW_BYTES } from "./constants.js";
 import {
   executeCall,
   matchOperation,
@@ -30,7 +31,7 @@ const operations = [op("get", "/pets"), op("get", "/pets/{petId}"), op("post", "
 function createTestContext(
   cwd: string,
   headers: Record<string, string> = {},
-  operationList: SpecOperation[] = [],
+  operationList: SpecOperation[] = operations,
 ): ExecutorContext {
   const sessionDir = join(cwd, ".scout");
   mkdirSync(sessionDir);
@@ -123,6 +124,76 @@ describe("RateLimiter", () => {
     await limiter.take();
     await limiter.take();
     expect(Date.now() - start).toBeGreaterThanOrEqual(30);
+  });
+});
+
+describe("executeCall guardrails", () => {
+  let cwd: string;
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), "scout-executor-"));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("rejects undocumented method/path pairs unless explicitly allowed", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const context = createTestContext(cwd, {}, []);
+
+    await expect(
+      executeCall(context, { method: "get", path: "/private", source: "call" }),
+    ).rejects.toThrow("Refusing undocumented request GET /private");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await executeCall(context, {
+      method: "get",
+      path: "/private",
+      source: "call",
+      allowUndocumented: true,
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("shares policy rate limiting across ordinary concurrent calls", async () => {
+    const sentAt: number[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        sentAt.push(performance.now());
+        return new Response("{}", { status: 200 });
+      }),
+    );
+    const context = createTestContext(cwd);
+    context.policy.rateLimit = 100;
+
+    await Promise.all([
+      executeCall(context, { method: "get", path: "/pets", source: "call" }),
+      executeCall(context, { method: "get", path: "/pets", source: "call" }),
+    ]);
+
+    expect(sentAt).toHaveLength(2);
+    expect((sentAt[1] as number) - (sentAt[0] as number)).toBeGreaterThanOrEqual(7);
+  });
+
+  it("reserves budget before concurrent requests are sent", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const context = createTestContext(cwd);
+    context.policy.budget = 1;
+
+    const results = await Promise.allSettled([
+      executeCall(context, { method: "get", path: "/pets", source: "call" }),
+      executeCall(context, { method: "get", path: "/pets", source: "call" }),
+    ]);
+
+    expect(results.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const state = JSON.parse(readFileSync(join(cwd, ".scout", "state.json"), "utf-8"));
+    expect(state.requestCount).toBe(1);
   });
 });
 
@@ -444,5 +515,159 @@ describe("executeCall request security", () => {
 
     expect(result.request.headers.Authorization).toBe("[redacted]");
     expect(result.response.body).toEqual({ credential: "[redacted]" });
+  });
+});
+
+describe("executeCall response surface", () => {
+  let cwd: string;
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), "scout-executor-"));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("captures all response headers and masks credential-like ones", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response("{}", {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            Server: "Vercel",
+            "X-Powered-By": "Next.js",
+            "Set-Cookie": "session=supersecret; HttpOnly",
+            Authorization: "Bearer leaked-token",
+          },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeCall(createTestContext(cwd), {
+      method: "get",
+      path: "/pets",
+      source: "call",
+    });
+
+    expect(result.response.headers.server).toBe("Vercel");
+    expect(result.response.headers["x-powered-by"]).toBe("Next.js");
+    expect(result.response.headers["set-cookie"]).toBe("session=[redacted]; HttpOnly");
+    expect(result.response.headers.authorization).toBe("[redacted]");
+  });
+
+  it("redacts the tester's own secret when echoed in a benign response header", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response("{}", {
+          status: 200,
+          headers: { "Content-Type": "application/json", "X-Echo": "raw-secret" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeCall(
+      createTestContext(cwd, { Authorization: "Bearer raw-secret" }),
+      { method: "get", path: "/pets", source: "call" },
+    );
+
+    expect(result.response.headers["x-echo"]).toBe("[redacted]");
+  });
+
+  it("returns the full response body without truncation and flags it complete", async () => {
+    const big = "x".repeat(50_000);
+    const fetchMock = vi.fn(async () => new Response(big, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeCall(createTestContext(cwd), {
+      method: "get",
+      path: "/pets",
+      source: "call",
+    });
+
+    expect(typeof result.response.body).toBe("string");
+    expect((result.response.body as string).length).toBe(50_000);
+    expect(result.response.body).not.toContain("[truncated]");
+    expect(result.response.bodyTruncated).toBe(false);
+  });
+
+  it("surfaces undocumented response fields in full so leaks stay visible", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ id: "1", internalDebugToken: "should-not-be-here", ssn: "123-45-6789" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeCall(createTestContext(cwd), {
+      method: "get",
+      path: "/pets",
+      source: "call",
+    });
+
+    expect(result.response.body).toEqual({
+      id: "1",
+      internalDebugToken: "should-not-be-here",
+      ssn: "123-45-6789",
+    });
+    expect(result.response.bodyTruncated).toBe(false);
+  });
+
+  it("cancels response streaming beyond the download byte limit", async () => {
+    let chunk = 0;
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        chunk += 1;
+        controller.enqueue(
+          chunk === 1 ? new Uint8Array(MAX_RESPONSE_DOWNLOAD_BYTES) : new Uint8Array([120]),
+        );
+      },
+      cancel,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(stream, { status: 200 })),
+    );
+
+    const result = await executeCall(createTestContext(cwd), {
+      method: "get",
+      path: "/pets",
+      source: "call",
+    });
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(result.response.bodyTruncated).toBe(true);
+    expect(new TextEncoder().encode(result.response.body as string).byteLength).toBe(
+      MAX_RESPONSE_PREVIEW_BYTES,
+    );
+  });
+
+  it("returns a bounded preview instead of a large parsed JSON value", async () => {
+    const raw = JSON.stringify({ values: ["x".repeat(MAX_RESPONSE_PREVIEW_BYTES)] });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(raw, { status: 200, headers: { "Content-Type": "application/json" } }),
+      ),
+    );
+
+    const result = await executeCall(createTestContext(cwd), {
+      method: "get",
+      path: "/pets",
+      source: "call",
+    });
+
+    expect(result.response.bodyIsJson).toBe(true);
+    expect(typeof result.response.body).toBe("string");
+    expect(result.response.bodyTruncated).toBe(true);
+    expect(new TextEncoder().encode(result.response.body as string).byteLength).toBeLessThanOrEqual(
+      MAX_RESPONSE_PREVIEW_BYTES,
+    );
   });
 });

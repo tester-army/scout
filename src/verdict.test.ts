@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SpecOperation } from "./spec-loader.js";
-import { buildVerdict, selectResponseSpec } from "./verdict.js";
+import { buildVerdict, mediaTypeMatches, selectResponseSpec } from "./verdict.js";
 
 function operation(overrides: Partial<SpecOperation> = {}): SpecOperation {
   return {
@@ -43,6 +43,15 @@ describe("selectResponseSpec", () => {
   });
 });
 
+describe("mediaTypeMatches", () => {
+  it("matches exact and wildcard media ranges without treating all JSON types as equal", () => {
+    expect(mediaTypeMatches("application/json", "application/json; charset=utf-8")).toBe(true);
+    expect(mediaTypeMatches("application/json", "application/problem+json")).toBe(false);
+    expect(mediaTypeMatches("application/*+json", "application/problem+json")).toBe(true);
+    expect(mediaTypeMatches("application/*", "application/json")).toBe(true);
+  });
+});
+
 describe("buildVerdict", () => {
   const base = { specVersion: "3.1.0", latencyMs: 12, redacted: false };
 
@@ -80,6 +89,21 @@ describe("buildVerdict", () => {
     expect(verdict.ok).toBe(false);
     expect(verdict.summary).toContain("FAIL");
     expect(verdict.summary).toContain("schema: INVALID");
+  });
+
+  it("fails and summarizes a response content-type mismatch", () => {
+    const verdict = buildVerdict({
+      ...base,
+      operation: operation(),
+      status: 200,
+      contentType: "application/problem+json",
+      body: { id: 1 },
+      bodyIsJson: true,
+    });
+
+    expect(verdict.contentTypeMatch).toBe(false);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.summary).toContain("content-type: MISMATCH");
   });
 
   it("stays ok on unknown checks (nothing definitive to fail)", () => {
