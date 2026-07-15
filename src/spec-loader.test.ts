@@ -1,7 +1,10 @@
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  discoverSpecUrl,
   extractOperations,
   hashSpec,
   loadSpec,
@@ -11,6 +14,19 @@ import {
 } from "./spec-loader.js";
 
 const fixturesDir = fileURLToPath(new URL("./__fixtures__", import.meta.url));
+
+/** Starts a test HTTP server on an ephemeral local port. */
+async function listen(server: Server): Promise<number> {
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return (server.address() as AddressInfo).port;
+}
+
+/** Closes a test HTTP server. */
+async function close(server: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+}
 
 describe("loadSpec", () => {
   it("loads and dereferences an OpenAPI 3.1 spec from a file", async () => {
@@ -39,10 +55,116 @@ describe("loadSpec", () => {
     expect(extractOperations(loaded.spec).map(operationKey)).toContain("GET /things");
   });
 
+  it("dereferences local file refs", async () => {
+    const loaded = await loadSpec(join(fixturesDir, "local-ref.json"));
+    const operation = extractOperations(loaded.spec)[0];
+    const schema = operation.responses["200"]?.content?.["application/json"]?.schema;
+
+    expect(loaded.dereferenced).toBe(true);
+    expect(schema).toMatchObject({ type: "object", required: ["id"] });
+  });
+
+  it("does not fetch remote external refs", async () => {
+    let remoteRequests = 0;
+    const remoteServer = createServer((_request, response) => {
+      remoteRequests++;
+      response.end(JSON.stringify({ type: "string" }));
+    });
+    const remotePort = await listen(remoteServer);
+    const specServer = createServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          openapi: "3.0.3",
+          info: { title: "Remote Ref API", version: "1.0.0" },
+          paths: {
+            "/things": {
+              get: {
+                responses: {
+                  "200": {
+                    description: "OK",
+                    content: {
+                      "application/json": {
+                        schema: {
+                          $ref: `http://127.0.0.1:${remotePort}/schema.json`,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        }),
+      );
+    });
+    const specPort = await listen(specServer);
+
+    try {
+      const loaded = await loadSpec(`http://127.0.0.1:${specPort}/openapi.json`);
+
+      expect(remoteRequests).toBe(0);
+      expect(loaded.dereferenced).toBe(false);
+      expect(loaded.warnings.join(" ")).toContain("remote external references are disabled");
+    } finally {
+      await Promise.all([close(specServer), close(remoteServer)]);
+    }
+  });
+
+  it("does not follow cross-host redirects", async () => {
+    let redirectedRequests = 0;
+    const redirectedServer = createServer((_request, response) => {
+      redirectedRequests++;
+      response.end(JSON.stringify({ openapi: "3.0.3" }));
+    });
+    const redirectedPort = await listen(redirectedServer);
+    const sourceServer = createServer((_request, response) => {
+      response.statusCode = 302;
+      response.setHeader("location", `http://127.0.0.1:${redirectedPort}/openapi.json`);
+      response.end();
+    });
+    const sourcePort = await listen(sourceServer);
+
+    try {
+      await expect(loadSpec(`http://127.0.0.1:${sourcePort}/openapi.json`)).rejects.toMatchObject({
+        code: "SPEC_INVALID",
+      });
+      expect(redirectedRequests).toBe(0);
+    } finally {
+      await Promise.all([close(sourceServer), close(redirectedServer)]);
+    }
+  });
+
   it("throws SPEC_INVALID for a missing file", async () => {
     await expect(loadSpec(join(fixturesDir, "nope.json"))).rejects.toMatchObject({
       code: "SPEC_INVALID",
     });
+  });
+});
+
+describe("discoverSpecUrl", () => {
+  it("does not follow cross-host redirects", async () => {
+    let redirectedRequests = 0;
+    const redirectedServer = createServer((_request, response) => {
+      redirectedRequests++;
+      response.end(JSON.stringify({ openapi: "3.0.3" }));
+    });
+    const redirectedPort = await listen(redirectedServer);
+    const sourceServer = createServer((_request, response) => {
+      response.statusCode = 302;
+      response.setHeader("location", `http://127.0.0.1:${redirectedPort}/openapi.json`);
+      response.end();
+    });
+    const sourcePort = await listen(sourceServer);
+
+    try {
+      await expect(discoverSpecUrl(`http://127.0.0.1:${sourcePort}`)).rejects.toMatchObject({
+        code: "SPEC_INVALID",
+      });
+      expect(redirectedRequests).toBe(0);
+    } finally {
+      await Promise.all([close(sourceServer), close(redirectedServer)]);
+    }
   });
 });
 

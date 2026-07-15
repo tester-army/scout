@@ -29,6 +29,11 @@ const DISCOVERY_PATHS = [
   "/.well-known/openapi.json",
 ];
 
+const FETCH_TIMEOUT_MS = 5000;
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+const MAX_REDIRECTS = 5;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
 export type SpecParameter = {
   name: string;
   in: "path" | "query" | "header" | "cookie";
@@ -104,6 +109,132 @@ function isUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
 }
 
+type FetchedText = {
+  ok: boolean;
+  status: number;
+  text: string;
+};
+
+/** Reads a response body without allowing unbounded buffering. */
+async function readLimitedText(response: Response): Promise<string> {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
+    await response.body?.cancel();
+    throw new Error(`Response exceeds ${MAX_RESPONSE_BYTES} bytes`);
+  }
+
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytesRead = 0;
+  let text = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytesRead += value.byteLength;
+    if (bytesRead > MAX_RESPONSE_BYTES) {
+      await reader.cancel();
+      throw new Error(`Response exceeds ${MAX_RESPONSE_BYTES} bytes`);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+
+  return text + decoder.decode();
+}
+
+/** Fetches text with a total timeout, bounded body, and same-host redirects. */
+async function fetchText(url: string): Promise<FetchedText> {
+  const original = new URL(url);
+  let current = original;
+  const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+
+  for (let redirects = 0; ; redirects++) {
+    const response = await fetch(current, { redirect: "manual", signal });
+    if (REDIRECT_STATUSES.has(response.status)) {
+      const location = response.headers.get("location");
+      await response.body?.cancel();
+      if (!location) throw new Error(`Redirect from ${current} has no Location header`);
+      if (redirects >= MAX_REDIRECTS) throw new Error(`Too many redirects from ${url}`);
+
+      const next = new URL(location, current);
+      if (next.host !== original.host) {
+        throw new Error(`Redirect from ${original.host} to ${next.host} is not allowed`);
+      }
+      current = next;
+      continue;
+    }
+
+    if (!response.ok) {
+      await response.body?.cancel();
+      return { ok: false, status: response.status, text: "" };
+    }
+
+    return { ok: true, status: response.status, text: await readLimitedText(response) };
+  }
+}
+
+/** Parses an already-fetched remote document without granting parser network access. */
+async function parseRemoteSpec(source: string, text: string): Promise<OpenApiDocument> {
+  const rootUrl = new URL(source);
+  rootUrl.hash = "";
+
+  return (await SwaggerParser.parse(source, {
+    resolve: {
+      external: false,
+      file: false,
+      http: false,
+      fetched: {
+        order: 1,
+        canRead: ({ url }: { url: string }) => url === rootUrl.href,
+        read: () => text,
+      },
+    },
+  } as never)) as unknown as OpenApiDocument;
+}
+
+/** Returns external references that policy prevents the parser from resolving. */
+function findDisabledExternalRefs(value: unknown, remoteSource: boolean): string[] {
+  const refs = new Set<string>();
+  const seen = new WeakSet<object>();
+  const pending: unknown[] = [value];
+
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== "object") continue;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    if (Array.isArray(current)) {
+      pending.push(...current);
+      continue;
+    }
+
+    const record = current as Record<string, unknown>;
+    const ref = record.$ref;
+    if (
+      typeof ref === "string" &&
+      !ref.startsWith("#") &&
+      (remoteSource || /^https?:\/\//i.test(ref) || ref.startsWith("//"))
+    ) {
+      refs.add(ref);
+    }
+    pending.push(...Object.values(record));
+  }
+
+  return [...refs];
+}
+
+/** Returns resolver options that never grant Swagger Parser HTTP access. */
+function referenceOptions(remoteSource: boolean): SwaggerParser.Options {
+  return {
+    resolve: remoteSource
+      ? { external: false, file: false, http: false }
+      : { external: true, http: false },
+    dereference: { circular: "ignore" },
+  };
+}
+
 /**
  * Resolves an absolute base URL from the spec's first server entry.
  * Substitutes server-variable defaults, and resolves relative server URLs
@@ -153,9 +284,9 @@ export async function discoverSpecUrl(baseUrl: string): Promise<string> {
     const candidate = `${base}${path}`;
     attempted.push(candidate);
     try {
-      const response = await fetch(candidate, { signal: AbortSignal.timeout(5000) });
+      const response = await fetchText(candidate);
       if (!response.ok) continue;
-      const text = await response.text();
+      const text = response.text;
       const trimmed = text.trim();
       if (trimmed.startsWith("{") || /^(openapi|swagger)\s*:/m.test(trimmed.slice(0, 500))) {
         return candidate;
@@ -178,7 +309,8 @@ export async function discoverSpecUrl(baseUrl: string): Promise<string> {
  */
 export async function loadSpec(source: string): Promise<LoadedSpec> {
   const warnings: string[] = [];
-  const resolvedSource = isUrl(source) ? source : resolve(source);
+  const remoteSource = isUrl(source);
+  const resolvedSource = remoteSource ? source : resolve(source);
 
   if (!isUrl(source) && !existsSync(resolvedSource)) {
     throw new ScoutError(`Spec file not found: ${resolvedSource}`, {
@@ -189,7 +321,15 @@ export async function loadSpec(source: string): Promise<LoadedSpec> {
 
   let parsed: OpenApiDocument;
   try {
-    parsed = (await SwaggerParser.parse(resolvedSource)) as unknown as OpenApiDocument;
+    if (remoteSource) {
+      const response = await fetchText(resolvedSource);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      parsed = await parseRemoteSpec(resolvedSource, response.text);
+    } else {
+      parsed = (await SwaggerParser.parse(resolvedSource, {
+        resolve: { http: false },
+      })) as unknown as OpenApiDocument;
+    }
   } catch (error) {
     throw new ScoutError(
       `Failed to parse spec from ${source}: ${error instanceof Error ? error.message : String(error)}`,
@@ -198,6 +338,15 @@ export async function loadSpec(source: string): Promise<LoadedSpec> {
         hint: "Ensure the source is valid OpenAPI 3.x or Swagger 2 JSON/YAML.",
         cause: error,
       },
+    );
+  }
+
+  const disabledExternalRefs = findDisabledExternalRefs(parsed, remoteSource);
+  if (disabledExternalRefs.length > 0) {
+    warnings.push(
+      `Skipped ${disabledExternalRefs.length} remote external $ref${
+        disabledExternalRefs.length === 1 ? "" : "s"
+      }; remote external references are disabled.`,
     );
   }
 
@@ -230,14 +379,14 @@ export async function loadSpec(source: string): Promise<LoadedSpec> {
 
   let dereferenced = false;
   let finalSpec = parsed;
+  const parserOptions = referenceOptions(remoteSource);
   try {
     finalSpec = (await SwaggerParser.dereference(
+      resolvedSource,
       structuredClone(parsed) as never,
-      {
-        dereference: { circular: "ignore" },
-      } as never,
+      parserOptions,
     )) as unknown as OpenApiDocument;
-    dereferenced = true;
+    dereferenced = disabledExternalRefs.length === 0;
   } catch (error) {
     warnings.push(
       `Could not fully dereference spec: ${
@@ -246,7 +395,9 @@ export async function loadSpec(source: string): Promise<LoadedSpec> {
     );
     try {
       finalSpec = (await SwaggerParser.bundle(
+        resolvedSource,
         structuredClone(parsed) as never,
+        parserOptions,
       )) as unknown as OpenApiDocument;
     } catch {
       finalSpec = parsed;
