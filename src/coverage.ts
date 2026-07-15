@@ -14,6 +14,11 @@ export type CoverageSummary = {
   exercised: number;
   validated: number;
   coveragePercent: number;
+  requestTotals: {
+    recorded: number;
+    matched: number;
+    probes: number;
+  };
   operations: OperationCoverage[];
   untouched: string[];
 };
@@ -56,6 +61,12 @@ export function computeCoverage(
     validated,
     coveragePercent:
       operations.length === 0 ? 0 : Math.round((exercised / operations.length) * 100),
+    requestTotals: {
+      recorded: records.length,
+      matched: records.filter((record) => record.operation !== null).length,
+      probes: records.filter((record) => record.source === "sweep" || record.source === "fuzz")
+        .length,
+    },
     operations: operationCoverage,
     untouched: operationCoverage
       .filter((op) => op.state === "unexercised")

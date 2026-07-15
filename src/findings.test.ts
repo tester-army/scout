@@ -1,5 +1,17 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseCategory, parseSeverity, severityRank, validateFindingInput } from "./findings.js";
+import {
+  appendFinding,
+  createFinding,
+  parseCategory,
+  parseSeverity,
+  readFindings,
+  severityRank,
+  updateFindingStatus,
+  validateFindingInput,
+} from "./findings.js";
 
 describe("parseSeverity / parseCategory", () => {
   it("accepts valid values", () => {
@@ -39,5 +51,45 @@ describe("validateFindingInput", () => {
         title: " boom ",
       }),
     ).toEqual({ severity: "high", category: "auth", endpoint: "GET /a", title: "boom" });
+  });
+});
+
+describe("deterministic findings", () => {
+  it("deduplicates repeated mechanical findings and preserves lifecycle status", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "scout-findings-"));
+    mkdirSync(join(cwd, ".scout"));
+    try {
+      const input = {
+        source: "sweep" as const,
+        severity: "high" as const,
+        category: "auth" as const,
+        endpoint: "GET /admin",
+        title: "Potential auth bypass",
+        status: "candidate" as const,
+      };
+      const first = createFinding(input);
+      const repeated = createFinding(input);
+
+      expect(repeated.id).toBe(first.id);
+      expect(appendFinding(first, cwd).created).toBe(true);
+      expect(appendFinding(repeated, cwd).created).toBe(false);
+      expect(readFindings(cwd)).toHaveLength(1);
+
+      expect(updateFindingStatus(first.id, "dismissed", cwd).status).toBe("dismissed");
+      expect(appendFinding(repeated, cwd).finding.status).toBe("dismissed");
+      expect(readFindings(cwd)).toHaveLength(1);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("throws when lifecycle id is unknown", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "scout-findings-"));
+    mkdirSync(join(cwd, ".scout"));
+    try {
+      expect(() => updateFindingStatus("missing", "confirmed", cwd)).toThrow(/not found/);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });

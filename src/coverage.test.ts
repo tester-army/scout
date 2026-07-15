@@ -39,6 +39,7 @@ describe("computeCoverage", () => {
     expect(summary.totalOperations).toBe(3);
     expect(summary.exercised).toBe(0);
     expect(summary.coveragePercent).toBe(0);
+    expect(summary.requestTotals).toEqual({ recorded: 0, matched: 0, probes: 0 });
     expect(summary.untouched).toHaveLength(3);
   });
 
@@ -51,6 +52,7 @@ describe("computeCoverage", () => {
     expect(summary.exercised).toBe(2);
     expect(summary.validated).toBe(1);
     expect(summary.coveragePercent).toBe(67);
+    expect(summary.requestTotals).toEqual({ recorded: 2, matched: 2, probes: 0 });
     expect(summary.operations.find((o) => o.operation === "GET /pets")?.state).toBe("validated");
     expect(summary.operations.find((o) => o.operation === "POST /pets")?.state).toBe("called");
     expect(summary.untouched).toEqual(["GET /pets/{id}"]);

@@ -1,7 +1,27 @@
-import { describe, expect, it } from "vitest";
-import type { CallResult } from "./http-executor.js";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CallResult, ExecutorContext } from "./http-executor.js";
 import type { SpecOperation } from "./spec-loader.js";
-import { evaluateProbe, planSweep, type ProbeKind, type SweepPlanEntry } from "./sweep-engine.js";
+import {
+  evaluateProbe,
+  planSweep,
+  planSweepDetailed,
+  readLatestSweepRun,
+  runSweep,
+  type ProbeKind,
+  type SweepPlanEntry,
+} from "./sweep-engine.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 function op(overrides: Partial<SpecOperation>): SpecOperation {
   return {
@@ -22,7 +42,7 @@ function result(status: number, verdict: Partial<CallResult["verdict"]> = {}): C
     requestId: "id",
     operation: "GET /x",
     request: { method: "GET", url: "https://x", headers: {} },
-    response: { status, body: {}, bodyIsJson: true },
+    response: { status, headers: {}, body: {}, bodyIsJson: true, bodyTruncated: false },
     verdict: {
       status,
       expectedStatuses: ["200"],
@@ -34,6 +54,39 @@ function result(status: number, verdict: Partial<CallResult["verdict"]> = {}): C
       redacted: false,
       ...verdict,
     },
+  };
+}
+
+/** Creates a minimal persisted executor context for sweep execution tests. */
+function context(operations: SpecOperation[], budget: number): ExecutorContext {
+  const cwd = mkdtempSync(join(tmpdir(), "scout-sweep-"));
+  temporaryDirectories.push(cwd);
+  mkdirSync(join(cwd, ".scout"));
+  writeFileSync(
+    join(cwd, ".scout", "state.json"),
+    JSON.stringify({
+      specSource: "spec.json",
+      specHash: "hash",
+      createdAt: new Date().toISOString(),
+      requestCount: 0,
+    }),
+  );
+  return {
+    cwd,
+    config: { spec: "spec.json", baseUrl: "https://api.example.com" },
+    policy: { allowMutations: false, rateLimit: 100_000, budget },
+    loadedSpec: {
+      spec: {},
+      source: "spec.json",
+      hash: "hash",
+      title: "API",
+      version: "1",
+      specVersion: "3.0.0",
+      converted: false,
+      dereferenced: true,
+      warnings: [],
+    },
+    operations,
   };
 }
 
@@ -176,6 +229,103 @@ describe("planSweep", () => {
   it("ignores non-safe methods", () => {
     expect(planSweep([op({ method: "post", path: "/pets" })])).toEqual([]);
   });
+
+  it("explains ineligible probes", () => {
+    const detailed = planSweepDetailed(
+      [
+        op({ method: "post", path: "/pets" }),
+        op({
+          path: "/admin",
+          secured: true,
+          authParameters: [{ name: "Authorization", in: "header" }],
+        }),
+      ],
+      { noAuthProbes: false },
+    );
+
+    expect(detailed.decisions).toEqual([
+      { operation: "POST /pets", disposition: "ineligible", reason: "unsafe-method" },
+      { operation: "GET /admin", kind: "happy-path", disposition: "planned" },
+      {
+        operation: "GET /admin",
+        kind: "missing-auth",
+        disposition: "ineligible",
+        reason: "auth-probes-disabled",
+      },
+      {
+        operation: "GET /admin",
+        kind: "invalid-auth",
+        disposition: "ineligible",
+        reason: "auth-probes-disabled",
+      },
+    ]);
+  });
+});
+
+describe("runSweep", () => {
+  it("returns a capped dry-run plan without sending requests", async () => {
+    const operations = [op({ path: "/a" }), op({ path: "/b" })];
+    const executor = context(operations, 10);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const summary = await runSweep(executor, operations, { dryRun: true, maxRequests: 1 });
+
+    expect(summary).toMatchObject({
+      probesPlanned: 2,
+      probesRunnable: 1,
+      probesRun: 0,
+      probesCapped: 1,
+      stopReason: "dry-run",
+    });
+    expect(summary.plan?.find((entry) => entry.operation === "GET /b")).toMatchObject({
+      disposition: "capped",
+      reason: "max-requests",
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(readLatestSweepRun(executor.cwd)).toBeNull();
+  });
+
+  it("stops cleanly before an exhausted budget", async () => {
+    const operations = [op({ path: "/a" })];
+    const executor = context(operations, 0);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const summary = await runSweep(executor, operations);
+
+    expect(summary).toMatchObject({
+      probesRun: 0,
+      probesCapped: 1,
+      stopReason: "budget-exhausted",
+      complete: false,
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(readLatestSweepRun(executor.cwd)?.stopReason).toBe("budget-exhausted");
+  });
+
+  it("stops cleanly after a 429 without recording a finding for it", async () => {
+    const operations = [op({ path: "/a" }), op({ path: "/b" })];
+    const executor = context(operations, 10);
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response("rate limited", {
+        status: 429,
+        headers: { "content-type": "text/plain" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const summary = await runSweep(executor, operations);
+
+    expect(summary).toMatchObject({
+      probesRun: 1,
+      findingsDetected: 0,
+      stopReason: "rate-limited",
+      complete: false,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(readLatestSweepRun(executor.cwd)?.stopReason).toBe("rate-limited");
+  });
 });
 
 describe("evaluateProbe", () => {
@@ -209,6 +359,7 @@ describe("evaluateProbe", () => {
     const findings = evaluateProbe(entry, result(200));
     expect(findings[0]?.severity).toBe("high");
     expect(findings[0]?.category).toBe("auth");
+    expect(findings[0]?.status).toBe("candidate");
     expect(findings[0]?.repro).toContain("--no-auth");
   });
 
@@ -221,6 +372,7 @@ describe("evaluateProbe", () => {
     const findings = evaluateProbe(entry, result(204));
     expect(findings[0]?.severity).toBe("high");
     expect(findings[0]?.category).toBe("auth");
+    expect(findings[0]?.status).toBe("candidate");
     expect(findings[0]?.repro).toContain("--invalid-auth");
   });
 
@@ -268,6 +420,7 @@ describe("evaluateProbe", () => {
     };
     const findings = evaluateProbe(entry, result(200));
     expect(findings[0]?.category).toBe("data-integrity");
+    expect(findings[0]?.status).toBe("candidate");
     expect(findings[0]?.title).toContain("candidate");
     expect(findings[0]?.repro).toContain(`--path-param id=scout-nonexistent-000000`);
   });

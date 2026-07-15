@@ -1,3 +1,6 @@
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { ScoutError } from "./errors.js";
 import {
   createFinding,
   type Finding,
@@ -10,11 +13,12 @@ import {
   type CallResult,
   type ExecutorContext,
 } from "./http-executor.js";
-import { loadSessionState } from "./session-store.js";
+import { getSessionDirPath, loadSessionState } from "./session-store.js";
 import { operationKey, SAFE_METHODS, type SpecOperation } from "./spec-loader.js";
 
 const SYNTHETIC_STRING_ID = "scout-nonexistent-000000";
 const SYNTHETIC_UUID = "00000000-0000-4000-8000-000000000000";
+const SWEEP_RUNS_FILENAME = "sweep-runs.jsonl";
 
 export type ProbeKind =
   | "happy-path"
@@ -35,13 +39,61 @@ export type SweepPlanEntry = {
 export type SweepOptions = {
   maxRequests?: number;
   noAuthProbes?: boolean;
+  dryRun?: boolean;
+};
+
+export type SweepPlanDisposition = "planned" | "ineligible" | "capped";
+
+export type SweepPlanDecision = {
+  operation: string;
+  kind?: ProbeKind;
+  disposition: SweepPlanDisposition;
+  reason?:
+    | "unsafe-method"
+    | "unsupported-required-input"
+    | "unsupported-path-constraints"
+    | "auth-probes-disabled"
+    | "no-replaceable-credential"
+    | "max-requests"
+    | "budget-exhausted";
+};
+
+export type SweepStopReason =
+  | "completed"
+  | "dry-run"
+  | "max-requests"
+  | "budget-exhausted"
+  | "rate-limited";
+
+export type SweepRunRecord = {
+  runId: string;
+  startedAt: string;
+  completedAt: string;
+  baseUrl: string;
+  probesPlanned: number;
+  probesRun: number;
+  requestCountBefore: number;
+  requestCountAfter: number;
+  stopReason: Exclude<SweepStopReason, "dry-run">;
+  complete: boolean;
 };
 
 export type SweepSummary = {
   probesPlanned: number;
+  probesRunnable: number;
   probesRun: number;
-  findingsCreated: number;
+  probesSkipped: number;
+  probesCapped: number;
+  findingsDetected: number;
+  stopReason: SweepStopReason;
+  complete: boolean;
   findings: Finding[];
+  plan?: SweepPlanDecision[];
+};
+
+export type DetailedSweepPlan = {
+  entries: SweepPlanEntry[];
+  decisions: SweepPlanDecision[];
 };
 
 function isParameterFreeGet(operation: SpecOperation): boolean {
@@ -102,29 +154,57 @@ function syntheticPathParam(operation: SpecOperation): { name: string; value: st
   return candidate ? { name: parameter.name, value: candidate } : null;
 }
 
-/**
- * Builds a deterministic probe plan over the (already filtered) operation
- * set. Pure — the executor runs it through the same guardrailed path.
- */
-export function planSweep(
+/** Builds a deterministic probe plan with explicit ineligibility reasons. */
+export function planSweepDetailed(
   operations: SpecOperation[],
   options: SweepOptions = {},
-): SweepPlanEntry[] {
-  const plan: SweepPlanEntry[] = [];
+): DetailedSweepPlan {
+  const entries: SweepPlanEntry[] = [];
+  const decisions: SweepPlanDecision[] = [];
+
+  /** Adds one executable probe and its public decision. */
+  const add = (entry: SweepPlanEntry): void => {
+    entries.push(entry);
+    decisions.push({
+      operation: operationKey(entry.operation),
+      kind: entry.kind,
+      disposition: "planned",
+    });
+  };
+  /** Adds one public ineligibility decision. */
+  const skip = (
+    operation: SpecOperation,
+    reason: NonNullable<SweepPlanDecision["reason"]>,
+    kind?: ProbeKind,
+  ): void => {
+    decisions.push({
+      operation: operationKey(operation),
+      ...(kind ? { kind } : {}),
+      disposition: "ineligible",
+      reason,
+    });
+  };
 
   for (const operation of operations) {
-    if (!SAFE_METHODS.includes(operation.method)) continue;
+    if (!SAFE_METHODS.includes(operation.method)) {
+      skip(operation, "unsafe-method");
+      continue;
+    }
 
     if (isParameterFreeGet(operation)) {
-      plan.push({ kind: "happy-path", operation });
+      add({ kind: "happy-path", operation });
 
-      if (
-        operation.secured &&
-        operation.authParameters.length > 0 &&
-        options.noAuthProbes !== false
-      ) {
-        plan.push({ kind: "missing-auth", operation, noAuth: true });
-        plan.push({ kind: "invalid-auth", operation, invalidAuth: true });
+      if (operation.secured) {
+        if (options.noAuthProbes === false) {
+          skip(operation, "auth-probes-disabled", "missing-auth");
+          skip(operation, "auth-probes-disabled", "invalid-auth");
+        } else if (operation.authParameters.length === 0) {
+          skip(operation, "no-replaceable-credential", "missing-auth");
+          skip(operation, "no-replaceable-credential", "invalid-auth");
+        } else {
+          add({ kind: "missing-auth", operation, noAuth: true });
+          add({ kind: "invalid-auth", operation, invalidAuth: true });
+        }
       }
       continue;
     }
@@ -134,22 +214,38 @@ export function planSweep(
       (param) => param.in === "query" && param.required,
     );
     if (operation.method === "get" && !hasPathParams && hasRequiredQueryParams) {
-      plan.push({ kind: "required-query", operation });
+      add({ kind: "required-query", operation });
       continue;
     }
 
     const pathParam = syntheticPathParam(operation);
     if (pathParam) {
-      plan.push({
+      add({
         kind: "not-found-shape",
         operation,
         pathParams: { [pathParam.name]: pathParam.value },
         expect: 404,
       });
+      continue;
     }
+
+    skip(
+      operation,
+      operation.method === "get" && hasPathParams
+        ? "unsupported-path-constraints"
+        : "unsupported-required-input",
+    );
   }
 
-  return plan;
+  return { entries, decisions };
+}
+
+/** Builds the executable portion of a deterministic sweep plan. */
+export function planSweep(
+  operations: SpecOperation[],
+  options: SweepOptions = {},
+): SweepPlanEntry[] {
+  return planSweepDetailed(operations, options).entries;
 }
 
 function findingFor(
@@ -159,6 +255,7 @@ function findingFor(
   category: FindingCategory,
   title: string,
   description: string,
+  status?: Finding["status"],
 ): Finding {
   const { operation } = entry;
   let repro = `scout call ${operation.method.toUpperCase()} ${operation.path}`;
@@ -174,6 +271,7 @@ function findingFor(
     category,
     endpoint: operationKey(operation),
     title,
+    ...(status ? { status } : {}),
     description,
     evidence: [
       `${result.request.method} ${result.request.url} -> ${result.response.status} (${result.verdict.latencyMs}ms)`,
@@ -253,6 +351,7 @@ export function evaluateProbe(entry: SweepPlanEntry, result: CallResult): Findin
         "auth",
         "Potential auth bypass: secured operation returned 2xx without credentials",
         "The spec requires credentials, but the probe returned 2xx after removing its declared credential. Validate response semantics and confirm no ambient authentication remained.",
+        "candidate",
       ),
     );
   }
@@ -270,6 +369,7 @@ export function evaluateProbe(entry: SweepPlanEntry, result: CallResult): Findin
         "auth",
         "Potential auth bypass: secured operation returned 2xx with invalid credentials",
         "The spec requires credentials, but the probe returned 2xx after replacing its declared credential. Validate response semantics and confirm no ambient authentication remained.",
+        "candidate",
       ),
     );
   }
@@ -316,6 +416,7 @@ export function evaluateProbe(entry: SweepPlanEntry, result: CallResult): Findin
           "data-integrity",
           "Synthetic candidate ID returned 2xx",
           `A schema-compatible synthetic id (${syntheticId}) returned ${result.response.status}. Verify it did not identify an existing resource before classifying this as incorrect missing-resource handling.`,
+          "candidate",
         ),
       );
     } else if (result.response.status >= 500) {
@@ -335,48 +436,148 @@ export function evaluateProbe(entry: SweepPlanEntry, result: CallResult): Findin
   return findings;
 }
 
+/** Reads the latest persisted sweep provenance for reports. */
+export function readLatestSweepRun(cwd = process.cwd()): SweepRunRecord | null {
+  const path = join(getSessionDirPath(cwd), SWEEP_RUNS_FILENAME);
+  if (!existsSync(path)) return null;
+  const runId = loadSessionState(cwd).runId;
+  const records = readFileSync(path, "utf-8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as SweepRunRecord);
+  return records.findLast((record) => record.runId === runId) ?? null;
+}
+
+/** Persists one compact sweep run record for later report provenance. */
+function appendSweepRun(record: SweepRunRecord, cwd: string): void {
+  appendFileSync(join(getSessionDirPath(cwd), SWEEP_RUNS_FILENAME), `${JSON.stringify(record)}\n`);
+}
+
+/** Applies request and budget caps to a detailed plan. */
+function capSweepPlan(
+  plan: DetailedSweepPlan,
+  maxRequests: number,
+  remainingBudget: number,
+): { selected: SweepPlanEntry[]; decisions: SweepPlanDecision[]; capped: number } {
+  const limit = Math.min(plan.entries.length, maxRequests, remainingBudget);
+  let plannedIndex = 0;
+  const decisions = plan.decisions.map((decision): SweepPlanDecision => {
+    if (decision.disposition !== "planned") return decision;
+    const index = plannedIndex++;
+    if (index < limit) return decision;
+    return {
+      ...decision,
+      disposition: "capped",
+      reason: index >= maxRequests ? "max-requests" : "budget-exhausted",
+    };
+  });
+  return {
+    selected: plan.entries.slice(0, limit),
+    decisions,
+    capped: plan.entries.length - limit,
+  };
+}
+
 /** Runs a sweep plan through the guardrailed executor, collecting findings. */
 export async function runSweep(
   context: ExecutorContext,
   operations: SpecOperation[],
   options: SweepOptions = {},
 ): Promise<SweepSummary> {
-  const plan = planSweep(operations, options);
-  const requestedLimit = options.maxRequests ?? plan.length;
-  const remainingBudget = Math.max(
-    0,
-    context.policy.budget - loadSessionState(context.cwd).requestCount,
-  );
-  let effectiveLimit = Math.min(requestedLimit, remainingBudget);
-  if (requestedLimit > 0 && remainingBudget === 0) effectiveLimit = 1;
-  const limited = plan.slice(0, effectiveLimit);
+  const startedAt = new Date().toISOString();
+  const stateBefore = loadSessionState(context.cwd);
+  const plan = planSweepDetailed(operations, options);
+  const requestedLimit = Math.max(0, options.maxRequests ?? plan.entries.length);
+  const remainingBudget = Math.max(0, context.policy.budget - stateBefore.requestCount);
+  const cappedPlan = capSweepPlan(plan, requestedLimit, remainingBudget);
+  const probesSkipped = plan.decisions.filter(
+    (decision) => decision.disposition === "ineligible",
+  ).length;
+
+  if (options.dryRun) {
+    return {
+      probesPlanned: plan.entries.length,
+      probesRunnable: cappedPlan.selected.length,
+      probesRun: 0,
+      probesSkipped,
+      probesCapped: cappedPlan.capped,
+      findingsDetected: 0,
+      stopReason: "dry-run",
+      complete: false,
+      findings: [],
+      plan: cappedPlan.decisions,
+    };
+  }
 
   const rateLimiter = new RateLimiter(context.policy.rateLimit);
   const findings: Finding[] = [];
   let probesRun = 0;
+  let stopReason: Exclude<SweepStopReason, "dry-run"> = "completed";
+  if (cappedPlan.capped > 0) {
+    stopReason =
+      remainingBudget <= requestedLimit && remainingBudget < plan.entries.length
+        ? "budget-exhausted"
+        : "max-requests";
+  }
 
-  for (const entry of limited) {
-    const result = await executeCall(
-      context,
-      {
-        method: entry.operation.method,
-        path: entry.operation.path,
-        source: "sweep",
-        ...(entry.pathParams ? { pathParams: entry.pathParams } : {}),
-        ...(entry.noAuth ? { noAuth: true } : {}),
-        ...(entry.invalidAuth ? { invalidAuth: true } : {}),
-        ...(entry.expect !== undefined ? { expect: entry.expect } : {}),
-      },
-      rateLimiter,
-    );
+  for (const entry of cappedPlan.selected) {
+    let result: CallResult;
+    try {
+      result = await executeCall(
+        context,
+        {
+          method: entry.operation.method,
+          path: entry.operation.path,
+          source: "sweep",
+          ...(entry.pathParams ? { pathParams: entry.pathParams } : {}),
+          ...(entry.noAuth ? { noAuth: true } : {}),
+          ...(entry.invalidAuth ? { invalidAuth: true } : {}),
+          ...(entry.expect !== undefined ? { expect: entry.expect } : {}),
+        },
+        rateLimiter,
+      );
+    } catch (error) {
+      if (error instanceof ScoutError && error.code === "BUDGET_EXCEEDED") {
+        stopReason = "budget-exhausted";
+        break;
+      }
+      throw error;
+    }
     probesRun += 1;
+    if (result.response.status === 429) {
+      stopReason = "rate-limited";
+      break;
+    }
     findings.push(...evaluateProbe(entry, result));
   }
 
+  const stateAfter = loadSessionState(context.cwd);
+  const complete = stopReason === "completed";
+  appendSweepRun(
+    {
+      runId: stateBefore.runId,
+      startedAt,
+      completedAt: new Date().toISOString(),
+      baseUrl: context.config.baseUrl,
+      probesPlanned: plan.entries.length,
+      probesRun,
+      requestCountBefore: stateBefore.requestCount,
+      requestCountAfter: stateAfter.requestCount,
+      stopReason,
+      complete,
+    },
+    context.cwd,
+  );
+
   return {
-    probesPlanned: plan.length,
+    probesPlanned: plan.entries.length,
+    probesRunnable: cappedPlan.selected.length,
     probesRun,
-    findingsCreated: findings.length,
+    probesSkipped,
+    probesCapped: cappedPlan.capped,
+    findingsDetected: findings.length,
+    stopReason,
+    complete,
     findings,
   };
 }

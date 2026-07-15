@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { ScoutError } from "./errors.js";
 import { getFindingsFilePath } from "./session-store.js";
 
@@ -24,9 +24,17 @@ export type Finding = {
   category: FindingCategory;
   endpoint: string;
   title: string;
+  status?: "candidate" | "confirmed" | "dismissed";
   description?: string;
   evidence?: string[];
   repro?: string;
+};
+
+export type FindingStatus = NonNullable<Finding["status"]>;
+
+export type FindingWriteResult = {
+  finding: Finding;
+  created: boolean;
 };
 
 /** Numeric rank for severity comparisons (critical is highest). */
@@ -54,19 +62,45 @@ export function parseCategory(value: string): FindingCategory {
   throw new Error(`--category must be one of: ${FINDING_CATEGORIES.join(", ")}`);
 }
 
-/** Creates a finding with generated id + timestamp. */
+/** Returns the stable identity used to collapse repeated mechanical findings. */
+export function findingDeduplicationKey(
+  finding: Pick<Finding, "source" | "category" | "endpoint" | "title" | "repro">,
+): string {
+  return [
+    finding.source,
+    finding.category,
+    finding.endpoint,
+    finding.title,
+    finding.repro ?? "",
+  ].join("\u0000");
+}
+
+/** Creates a finding with a stable mechanical id or a random agent-authored id. */
 export function createFinding(input: Omit<Finding, "id" | "timestamp">): Finding {
+  const id =
+    input.source === "agent"
+      ? randomUUID()
+      : `finding_${createHash("sha256").update(findingDeduplicationKey(input)).digest("hex").slice(0, 24)}`;
   return {
-    id: randomUUID(),
+    id,
     timestamp: new Date().toISOString(),
     ...input,
   };
 }
 
-/** Appends a finding to the session findings log. */
-export function appendFinding(finding: Finding, cwd = process.cwd()): void {
+/** Appends a finding unless the same deterministic finding is already recorded. */
+export function appendFinding(finding: Finding, cwd = process.cwd()): FindingWriteResult {
+  if (finding.source !== "agent") {
+    const key = findingDeduplicationKey(finding);
+    const existing = readFindings(cwd).find(
+      (candidate) => candidate.source !== "agent" && findingDeduplicationKey(candidate) === key,
+    );
+    if (existing) return { finding: existing, created: false };
+  }
+
   const path = getFindingsFilePath(cwd);
   appendFileSync(path, `${JSON.stringify(finding)}\n`);
+  return { finding, created: true };
 }
 
 /** Reads all recorded findings for the session (empty when none). */
@@ -74,10 +108,50 @@ export function readFindings(cwd = process.cwd()): Finding[] {
   const path = getFindingsFilePath(cwd);
   if (!existsSync(path)) return [];
 
-  return readFileSync(path, "utf-8")
+  const findings = readFileSync(path, "utf-8")
     .split("\n")
     .filter((line) => line.trim())
     .map((line) => JSON.parse(line) as Finding);
+
+  const seenMechanical = new Set<string>();
+  return findings.filter((finding) => {
+    if (finding.source === "agent") return true;
+    const key = findingDeduplicationKey(finding);
+    if (seenMechanical.has(key)) return false;
+    seenMechanical.add(key);
+    return true;
+  });
+}
+
+/** Updates one finding's lifecycle status by id and persists the compacted log. */
+export function updateFindingStatus(
+  id: string,
+  status: FindingStatus,
+  cwd = process.cwd(),
+): Finding {
+  const findings = readFindings(cwd);
+  const index = findings.findIndex((finding) => finding.id === id);
+  if (index === -1) {
+    throw new ScoutError(`Finding ${id} was not found.`, {
+      code: "NOT_FOUND",
+      hint: "Run `scout finding list --json` to copy a current finding id.",
+    });
+  }
+
+  const updated = { ...findings[index], status } as Finding;
+  findings[index] = updated;
+  const path = getFindingsFilePath(cwd);
+  const temporaryPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(
+    temporaryPath,
+    findings.map((finding) => JSON.stringify(finding)).join("\n") + "\n",
+    {
+      encoding: "utf-8",
+      mode: 0o600,
+    },
+  );
+  renameSync(temporaryPath, path);
+  return updated;
 }
 
 /** Validates finding input coming from CLI flags. */

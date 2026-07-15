@@ -1,4 +1,12 @@
-import { appendFinding, createFinding, readFindings, validateFindingInput } from "./findings.js";
+import {
+  appendFinding,
+  createFinding,
+  readFindings,
+  updateFindingStatus,
+  type Finding,
+  type FindingStatus,
+  validateFindingInput,
+} from "./findings.js";
 import { loadSessionState } from "./session-store.js";
 import { isInteractive } from "./utils.js";
 
@@ -13,6 +21,10 @@ export type FindingAddOptions = {
 };
 
 export type FindingListOptions = {
+  json?: boolean;
+};
+
+export type FindingLifecycleOptions = {
   json?: boolean;
 };
 
@@ -31,23 +43,24 @@ export async function runFindingAddCommand(options: FindingAddOptions): Promise<
     ...(options.repro ? { repro: options.repro } : {}),
   });
 
-  appendFinding(finding);
+  const recorded = appendFinding(finding).finding;
 
   if (options.json || !isInteractive()) {
-    console.log(JSON.stringify({ recorded: true, finding }, null, 2));
+    console.log(JSON.stringify({ recorded: true, finding: recorded }, null, 2));
     return;
   }
 
-  console.log(`Recorded ${finding.severity} finding: ${finding.title} (${finding.endpoint})`);
+  console.log(`Recorded ${recorded.severity} finding: ${recorded.title} (${recorded.endpoint})`);
 }
 
 /** Lists recorded findings. */
 export async function runFindingListCommand(options: FindingListOptions): Promise<void> {
   loadSessionState();
   const findings = readFindings();
+  const statuses = countFindingStatuses(findings);
 
   if (options.json || !isInteractive()) {
-    console.log(JSON.stringify({ count: findings.length, findings }, null, 2));
+    console.log(JSON.stringify({ count: findings.length, statuses, findings }, null, 2));
     return;
   }
 
@@ -58,7 +71,47 @@ export async function runFindingListCommand(options: FindingListOptions): Promis
 
   for (const finding of findings) {
     console.log(
-      `[${finding.severity}] ${finding.category} — ${finding.endpoint}: ${finding.title}`,
+      `[${finding.status ?? "confirmed"}] [${finding.severity}] ${finding.category} — ${finding.endpoint}: ${finding.title} (${finding.id})`,
     );
   }
+}
+
+/** Confirms a candidate finding by id. */
+export async function runFindingConfirmCommand(
+  id: string,
+  options: FindingLifecycleOptions,
+): Promise<void> {
+  runFindingLifecycleCommand(id, "confirmed", options);
+}
+
+/** Dismisses a finding by id so it no longer gates reports. */
+export async function runFindingDismissCommand(
+  id: string,
+  options: FindingLifecycleOptions,
+): Promise<void> {
+  runFindingLifecycleCommand(id, "dismissed", options);
+}
+
+/** Counts effective lifecycle statuses for summary-first output. */
+function countFindingStatuses(findings: Finding[]): Record<FindingStatus, number> {
+  const counts: Record<FindingStatus, number> = { candidate: 0, confirmed: 0, dismissed: 0 };
+  for (const finding of findings) counts[finding.status ?? "confirmed"] += 1;
+  return counts;
+}
+
+/** Applies and prints one finding lifecycle transition. */
+function runFindingLifecycleCommand(
+  id: string,
+  status: FindingStatus,
+  options: FindingLifecycleOptions,
+): void {
+  loadSessionState();
+  const finding = updateFindingStatus(id, status);
+  if (options.json || !isInteractive()) {
+    console.log(JSON.stringify({ updated: true, status, finding }, null, 2));
+    return;
+  }
+  console.log(
+    `${status === "confirmed" ? "Confirmed" : "Dismissed"} finding ${id}: ${finding.title}`,
+  );
 }
