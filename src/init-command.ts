@@ -23,6 +23,7 @@ export type InitOptions = {
 };
 
 type InitResult = {
+  runId: string;
   configPath: string;
   spec: { source: string; title: string; version: string; specVersion: string };
   operations: number;
@@ -103,6 +104,7 @@ export async function runInitCommand(
     config = existing.config;
     loadedSpec = await loadSpec(config.spec);
   } else {
+    const hasNewSpec = Boolean(specArg || options.discover);
     const specSource = await resolveSpecSource({
       specArg,
       options,
@@ -114,7 +116,7 @@ export async function runInitCommand(
       specSource,
       options,
       interactive,
-      existing: existing?.config,
+      existing: hasNewSpec ? undefined : existing?.config,
       flagHeaders,
       specDefaultBaseUrl: loadedSpec.defaultBaseUrl,
     });
@@ -123,7 +125,7 @@ export async function runInitCommand(
   const specSource = config.spec;
   const baseUrlSource = resolveBaseUrlSource({
     flag: options.baseUrl,
-    existing: existing?.config.baseUrl,
+    existing: !specArg && !options.discover ? existing?.config.baseUrl : undefined,
     specDefault: loadedSpec.defaultBaseUrl,
     resolved: config.baseUrl,
   });
@@ -132,11 +134,12 @@ export async function runInitCommand(
     config: options.config,
   });
   const gitignoreUpdated = ensureSessionDirGitignored();
-  initSession(loadedSpec);
+  const session = initSession(loadedSpec);
 
   const operations = extractOperations(loadedSpec.spec);
 
   const result: InitResult = {
+    runId: session.runId,
     configPath,
     spec: {
       source: specSource,
@@ -258,12 +261,8 @@ async function resolveSpecSource(input: {
     return specArg;
   }
 
-  if (existing?.spec) {
-    return existing.spec;
-  }
-
   if (options.discover) {
-    const baseUrl = options.baseUrl ?? existing?.baseUrl;
+    const baseUrl = options.baseUrl;
     if (!baseUrl) {
       throw new ScoutError("--discover requires --base-url to probe well-known spec paths.", {
         code: "VALIDATION_ERROR",
@@ -271,6 +270,10 @@ async function resolveSpecSource(input: {
       });
     }
     return discoverSpecUrl(baseUrl);
+  }
+
+  if (existing?.spec) {
+    return existing.spec;
   }
 
   if (interactive) {

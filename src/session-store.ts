@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
@@ -12,6 +14,7 @@ import { ScoutError } from "./errors.js";
 import type { LoadedSpec } from "./spec-loader.js";
 
 export type SessionState = {
+  runId: string;
   specSource: string;
   specHash: string;
   createdAt: string;
@@ -38,6 +41,8 @@ const STATE_FILENAME = "state.json";
 const SPEC_FILENAME = "spec.json";
 const REQUESTS_FILENAME = "requests.jsonl";
 const FINDINGS_FILENAME = "findings.jsonl";
+const VARS_FILENAME = "vars.json";
+const RUN_ARTIFACT_FILENAMES = [REQUESTS_FILENAME, FINDINGS_FILENAME, VARS_FILENAME] as const;
 
 /** Returns the absolute session directory path for a project. */
 export function getSessionDirPath(cwd = process.cwd()): string {
@@ -50,9 +55,28 @@ export function sessionExists(cwd = process.cwd()): boolean {
 }
 
 function writeFileAtomic(path: string, content: string): void {
-  const tempPath = `${path}.tmp-${Date.now()}`;
+  const tempPath = `${path}.tmp-${randomUUID()}`;
   writeFileSync(tempPath, content, { encoding: "utf-8", mode: 0o600 });
   renameSync(tempPath, path);
+}
+
+/** Creates immutable identity and clean counters for a new run. */
+function createRunState(specSource: string, specHash: string): SessionState {
+  return {
+    runId: randomUUID(),
+    specSource,
+    specHash,
+    createdAt: new Date().toISOString(),
+    requestCount: 0,
+  };
+}
+
+/** Removes artifacts that must never cross run boundaries. */
+function clearRunArtifacts(cwd: string): void {
+  const dir = getSessionDirPath(cwd);
+  for (const filename of RUN_ARTIFACT_FILENAMES) {
+    rmSync(join(dir, filename), { force: true });
+  }
 }
 
 /** Appends the session dir to .gitignore once (idempotent). */
@@ -73,23 +97,25 @@ export function ensureSessionDirGitignored(cwd = process.cwd()): boolean {
   return true;
 }
 
-/** Creates (or refreshes) the on-disk session: state + cached deref'd spec. */
+/** Caches a spec and starts a fresh isolated run. */
 export function initSession(loadedSpec: LoadedSpec, cwd = process.cwd()): SessionState {
   const dir = getSessionDirPath(cwd);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
 
-  const previous = sessionExists(cwd) ? loadSessionState(cwd) : null;
-  const sameSpec = previous?.specHash === loadedSpec.hash;
-
-  const state: SessionState = {
-    specSource: loadedSpec.source,
-    specHash: loadedSpec.hash,
-    createdAt: sameSpec && previous ? previous.createdAt : new Date().toISOString(),
-    requestCount: sameSpec && previous ? previous.requestCount : 0,
-  };
+  const state = createRunState(loadedSpec.source, loadedSpec.hash);
 
   writeFileAtomic(join(dir, SPEC_FILENAME), JSON.stringify(loadedSpec, null, 2));
+  clearRunArtifacts(cwd);
   writeFileAtomic(join(dir, STATE_FILENAME), JSON.stringify(state, null, 2));
+  return state;
+}
+
+/** Starts a fresh run while preserving the active session's cached spec. */
+export function resetSession(cwd = process.cwd()): SessionState {
+  const previous = loadSessionState(cwd);
+  const state = createRunState(previous.specSource, previous.specHash);
+  clearRunArtifacts(cwd);
+  writeFileAtomic(join(getSessionDirPath(cwd), STATE_FILENAME), JSON.stringify(state, null, 2));
   return state;
 }
 
@@ -104,10 +130,14 @@ export function loadSessionState(cwd = process.cwd()): SessionState {
   }
 
   const parsed = JSON.parse(readFileSync(statePath, "utf-8")) as Partial<SessionState>;
+  const specHash = typeof parsed.specHash === "string" ? parsed.specHash : "unknown";
+  const createdAt =
+    typeof parsed.createdAt === "string" ? parsed.createdAt : new Date().toISOString();
   return {
+    runId: typeof parsed.runId === "string" ? parsed.runId : `legacy-${specHash}-${createdAt}`,
     specSource: typeof parsed.specSource === "string" ? parsed.specSource : "unknown",
-    specHash: typeof parsed.specHash === "string" ? parsed.specHash : "unknown",
-    createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : new Date().toISOString(),
+    specHash,
+    createdAt,
     requestCount: typeof parsed.requestCount === "number" ? parsed.requestCount : 0,
   };
 }
