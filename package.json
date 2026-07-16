@@ -1,6 +1,6 @@
 {
   "name": "@testerarmy/scout",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Safe API exploration harness for coding agents. Send a scout ahead of the army.",
   "keywords": [
     "agent",
