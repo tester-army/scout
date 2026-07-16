@@ -178,6 +178,17 @@ Define named identities in `scout.json`; values may reference environment variab
 
 Select one with `--auth-profile admin` on `call`, `sweep`, or `fuzz`. (`spec` may be omitted for spec-less mode.)
 
+Policy knobs (all optional; shown with their defaults):
+
+| Key                               | Default | Meaning                                                                                                                                               |
+| --------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rateLimit`                       | `5`     | Max **requests per second** to the target, shared across every command in a run.                                                                      |
+| `budget`                          | `300`   | Max **total requests per run** (cumulative across every `call`/`sweep`/`fuzz`, not per command). Resets on `scout reset` or an explicit `scout init`. |
+| `allowMutations`                  | `false` | Permit `POST/PUT/PATCH/DELETE`.                                                                                                                       |
+| `allowedMethods` / `allowedPaths` | unset   | Restrict every request to these methods / path globs.                                                                                                 |
+
+Because `budget` is per-run and cumulative, a `sweep` after some manual `call`s draws from the same ceiling — check `scout status` to see remaining budget.
+
 ## Findings and CI
 
 Fuzz findings may begin as candidates. Validate them before gating:
