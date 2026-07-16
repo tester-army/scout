@@ -12,6 +12,35 @@
 
 Scout is the layer between a coding agent and a live API. It gives agents small OpenAPI views, guarded HTTP execution, deterministic negative probes, request chaining, structured findings, and honest coverage/reporting. It contains no LLM and sends no telemetry.
 
+## Get started - hand this to your agent
+
+Paste this to any coding agent with shell access and fill in the three values. It works **with or without** an OpenAPI spec:
+
+```text
+Test my API with scout, a guarded API testing harness for coding agents.
+
+- Base URL:     <YOUR_BASE_URL>            e.g. https://api.example.com
+- OpenAPI spec: <YOUR_SPEC_URL_OR_FILE>    or write "none" if you don't have one
+- Auth header:  Authorization: Bearer $API_TOKEN   (keep the token in that env var)
+
+Do this:
+1. Install the scout skill so you learn the full workflow:
+     npx @testerarmy/scout@latest agent init
+2. Initialize the project:
+     • with a spec: npx @testerarmy/scout@latest init <SPEC> --base-url <BASE_URL> --header "Authorization: Bearer $API_TOKEN"
+     • spec "none": npx @testerarmy/scout@latest init --base-url <BASE_URL> --header "Authorization: Bearer $API_TOKEN"
+3. Follow the scout skill: orient with `endpoints`/`schema` (if a spec is loaded),
+   explore with `scout call` (full response + headers come back), chain requests
+   with `--capture name=path` and `{{name}}`, `scout fuzz` write endpoints, and
+   `scout sweep` for a baseline.
+4. Record issues with `scout finding add`, then produce `scout report`.
+
+Rules: only test the API above, which I am authorizing. Do NOT send mutations
+(POST/PUT/PATCH/DELETE) unless I say so. Clean up anything you create.
+```
+
+`scout agent init` only copies the version-matched skill into `.agents/skills/scout/` and adds a discovery note to `AGENTS.md` - no remote installers. Prefer to drive it yourself? See [Quick start](#quick-start) below.
+
 ## Why not just give your agent `curl`?
 
 An agent with raw `curl` can hit any host, fire destructive requests, leak secrets into logs, and has to eyeball every response by hand. Scout keeps the agent's autonomy but puts guardrails and structure around it.
@@ -23,8 +52,8 @@ An agent with raw `curl` can hit any host, fire destructive requests, leak secre
 | No rate limit, no ceiling on volume               | Shared rate limit + atomic per-run request **budget**                                                                       |
 | Secrets end up in argv, shell history, and output | `$VAR` references resolved at request time, redacted everywhere                                                             |
 | Agent reads a raw dump and guesses if it's OK     | Mechanical **verdict**: status vs. documented codes, JSON-schema validation, content-type, latency                          |
-| Full body + headers, or nothing                   | **Full response body and every header** returned, so leaks and undocumented fields are visible — with your secrets stripped |
-| Stateless — re-parse IDs with shell glue          | **Capture** response values and reuse them with `{{interpolation}}`                                                         |
+| Full body + headers, or nothing                   | **Full response body and every header** returned, so leaks and undocumented fields are visible - with your secrets stripped |
+| Stateless - re-parse IDs with shell glue          | **Capture** response values and reuse them with `{{interpolation}}`                                                         |
 | Findings live in the chat and vanish              | Structured findings, coverage, and a CI-gating report                                                                       |
 
 Guardrails are not authorization. You still decide what the agent is allowed to touch.
@@ -38,7 +67,7 @@ npx @testerarmy/scout sweep --max-requests 25
 npx @testerarmy/scout report --ci --min-coverage 10
 ```
 
-The base URL defaults to `servers[0].url`. Keep target credentials in environment variables — never in `scout.json`:
+The base URL defaults to `servers[0].url`. Keep target credentials in environment variables - never in `scout.json`:
 
 ```sh
 npx @testerarmy/scout init openapi.json \
@@ -48,10 +77,10 @@ npx @testerarmy/scout init openapi.json \
 
 ## No OpenAPI spec? Explore any base URL
 
-No spec is required. Point scout at a base URL and it runs in **spec-less mode** — every request is treated as undocumented, but the host lock, mutation gate, rate limit, budget, secret redaction, and 5xx/latency verdicts all still apply. It's a safer, structured `curl`.
+No spec is required. Point scout at a base URL and it runs in **spec-less mode** - every request is treated as undocumented, but the host lock, mutation gate, rate limit, budget, secret redaction, and 5xx/latency verdicts all still apply. It's a safer, structured `curl`.
 
 ```sh
-# no spec argument — just a base URL
+# no spec argument - just a base URL
 npx @testerarmy/scout init --base-url https://api.example.com \
   --header 'Authorization: Bearer $API_TOKEN'
 
@@ -60,33 +89,6 @@ npx @testerarmy/scout call GET /v1/users/42 --extract email
 ```
 
 If you later get a spec, re-run `init` with it (or `--discover --base-url <url>` to probe well-known paths) and you gain endpoint/schema views, coverage, and schema-aware verdicts. If you have a spec but need to hit a path outside it, use `scout call ... --allow-undocumented`.
-
-## Give this to your coding agent
-
-Paste this to an agent that has shell access. It installs the CLI, sets up the bundled skill, and explores your API:
-
-```text
-Test my API at https://api.example.com. Use scout, a guarded API testing harness for agents.
-
-1. Install the scout skill so you learn the workflow:
-     npx @testerarmy/scout@latest agent init
-2. Initialize a project (I have no OpenAPI spec, so go spec-less):
-     npx @testerarmy/scout@latest init --base-url https://api.example.com \
-       --header "Authorization: Bearer $API_TOKEN"
-   (If I give you an OpenAPI URL or file, pass it as the first argument instead.)
-3. Explore (the installed skill describes the full workflow):
-     npx @testerarmy/scout@latest endpoints --json        # if a spec is loaded
-     npx @testerarmy/scout@latest call GET /path --json
-4. Chain requests with --capture name=path and {{name}}; inspect full responses
-   and headers for leaks or undocumented fields.
-5. Probe write endpoints with `scout fuzz`, and run `scout sweep` for a baseline.
-6. Record issues with `scout finding add`, then produce `scout report`.
-
-Rules: only test what I authorized above. Do NOT enable or send mutations
-(POST/PUT/PATCH/DELETE) without asking me first. Clean up any resources you create.
-```
-
-`scout agent init` only copies the version-matched skill into `.agents/skills/scout/` and adds a discovery note to `AGENTS.md`. It runs no remote installers.
 
 ## Agent workflow
 
@@ -160,7 +162,7 @@ scout report --ci --min-coverage 20 --require-probes
 ## Safety model
 
 - Requests are restricted to the configured base URL host.
-- Undocumented method/path pairs are rejected unless `--allow-undocumented` is set — or the project is spec-less, where every path is treated as undocumented but all other guardrails remain.
+- Undocumented method/path pairs are rejected unless `--allow-undocumented` is set - or the project is spec-less, where every path is treated as undocumented but all other guardrails remain.
 - Mutations are blocked unless `policy.allowMutations` is enabled.
 - Optional method and path scopes constrain every request.
 - Every target request shares the configured rate limit and atomic run budget.
