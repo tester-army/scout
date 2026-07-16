@@ -140,6 +140,31 @@ describe("loadSpec", () => {
       code: "SPEC_INVALID",
     });
   });
+
+  it("rejects a spec larger than the configured cap, but loads it when raised", async () => {
+    // Pad a valid spec past a tiny cap with a large description field.
+    const spec = {
+      openapi: "3.0.3",
+      info: { title: "Big API", version: "1.0.0", description: "x".repeat(200_000) },
+      paths: {},
+    };
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify(spec));
+    });
+    const port = await listen(server);
+    const url = `http://127.0.0.1:${port}/openapi.json`;
+
+    try {
+      await expect(loadSpec(url, { maxBytes: 50_000 })).rejects.toMatchObject({
+        code: "SPEC_INVALID",
+      });
+      const loaded = await loadSpec(url, { maxBytes: 5 * 1024 * 1024 });
+      expect(loaded.title).toBe("Big API");
+    } finally {
+      await close(server);
+    }
+  });
 });
 
 describe("discoverSpecUrl", () => {

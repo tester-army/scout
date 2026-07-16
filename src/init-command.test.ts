@@ -82,4 +82,29 @@ describe("init run isolation", () => {
       allowedMethods: ["GET"],
     });
   });
+
+  it("persists --max-spec-mb as maxSpecBytes so hydration reuses the cap", async () => {
+    const { runInitCommand } = await import("./init-command.js");
+    await runInitCommand("first.json", { maxSpecMb: 40, json: true });
+
+    expect(loadProjectConfig()?.config.maxSpecBytes).toBe(40 * 1024 * 1024);
+  });
+});
+
+describe("resolveMaxSpecBytes", () => {
+  it("converts MiB to bytes and prefers the flag over persisted config", async () => {
+    const { resolveMaxSpecBytes } = await import("./init-command.js");
+    expect(resolveMaxSpecBytes({ maxSpecMb: 10 }, { baseUrl: "x", maxSpecBytes: 999 })).toBe(
+      10 * 1024 * 1024,
+    );
+    expect(resolveMaxSpecBytes({}, { baseUrl: "x", maxSpecBytes: 999 })).toBe(999);
+    expect(resolveMaxSpecBytes({}, undefined)).toBeUndefined();
+  });
+
+  it("rejects a value above the hard ceiling", async () => {
+    const { resolveMaxSpecBytes } = await import("./init-command.js");
+    expect(() => resolveMaxSpecBytes({ maxSpecMb: 1000 }, undefined)).toThrowError(
+      /between 1 and 100/,
+    );
+  });
 });

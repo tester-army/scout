@@ -199,7 +199,7 @@ scout report --ci --min-coverage 20 --require-probes
 - Optional method and path scopes constrain every request.
 - Every target request shares the configured rate limit and atomic run budget.
 - Redirects are not followed by target calls; spec redirects cannot cross hosts.
-- Remote external `$ref`s are disabled; spec downloads are time and size limited.
+- Remote external `$ref`s are disabled; spec downloads are time and size limited (25 MiB default; raise with `scout init --max-spec-mb <n>`, hard ceiling 100 MiB).
 - Response downloads are capped at 1 MiB and surfaced as bounded previews.
 - Credential values are redacted while cookie names and security attributes remain inspectable.
 
