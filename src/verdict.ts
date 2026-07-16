@@ -1,7 +1,7 @@
 import { Ajv, type ValidateFunction } from "ajv";
 import addFormats from "ajv-formats";
 import { Ajv2020 } from "ajv/dist/2020.js";
-import type { SpecOperation, SpecResponse } from "./spec-loader.js";
+import { operationKey, type SpecOperation, type SpecResponse } from "./spec-loader.js";
 
 export type Verdict = {
   /** Pre-computed pass/fail: false on any definitive contract violation. */
@@ -155,6 +155,38 @@ function compileValidator(schema: object, specVersion: string): ValidateFunction
 
   validatorCache.set(schema, validator);
   return validator;
+}
+
+/**
+ * Counts operations whose response schemas cannot be compiled by ajv (usually
+ * unresolved `$ref`s or invalid JSON Schema). These silently degrade to
+ * `schema: n/a` at request time — indistinguishable from "no schema defined" —
+ * so init surfaces the count up front instead of letting validation look
+ * load-bearing when it isn't.
+ */
+export function countUncompilableSchemaOperations(
+  operations: SpecOperation[],
+  specVersion: string,
+): { count: number; operations: string[] } {
+  const uncompilable: string[] = [];
+  for (const operation of operations) {
+    let hasUncompilable = false;
+    for (const response of Object.values(operation.responses)) {
+      for (const [mediaType, media] of Object.entries(response.content ?? {})) {
+        if (!mediaType.toLowerCase().includes("json")) continue;
+        const schema = media?.schema;
+        if (!schema || (typeof schema !== "object" && typeof schema !== "boolean")) continue;
+        if (typeof schema === "boolean") continue;
+        if (compileValidator(schema, specVersion) === null) {
+          hasUncompilable = true;
+          break;
+        }
+      }
+      if (hasUncompilable) break;
+    }
+    if (hasUncompilable) uncompilable.push(operationKey(operation));
+  }
+  return { count: uncompilable.length, operations: uncompilable };
 }
 
 /** Validates one JSON-compatible value against an OpenAPI response or request schema. */
