@@ -49,12 +49,14 @@ export async function runSweepCommand(options: SweepOptions): Promise<void> {
     probesRun: summary.probesRun,
     probesSkipped: summary.probesSkipped,
     probesCapped: summary.probesCapped,
+    probesErrored: summary.probesErrored,
     findingsDetected: summary.findingsDetected,
     findingsCreated,
     stopReason: summary.stopReason,
     complete: summary.complete,
     dryRun: options.dryRun === true,
     ...(summary.plan ? { plan: summary.plan } : {}),
+    ...(summary.errors ? { errors: summary.errors } : {}),
     findings,
   };
 
@@ -76,10 +78,13 @@ export async function runSweepCommand(options: SweepOptions): Promise<void> {
   }
 
   console.log(
-    `Sweep ${summary.complete ? "complete" : "incomplete"}: ${summary.probesRun}/${summary.probesPlanned} probes run, ${findingsCreated} new findings (${summary.findingsDetected} detected); stop=${summary.stopReason}.`,
+    `Sweep ${summary.complete ? "complete" : "incomplete"}: ${summary.probesRun}/${summary.probesPlanned} probes run, ${findingsCreated} new findings (${summary.findingsDetected} detected)${summary.probesErrored > 0 ? `, ${summary.probesErrored} errored` : ""}; stop=${summary.stopReason}.`,
   );
   for (const finding of findings) {
     console.log(`  [${finding.severity}] ${finding.endpoint} — ${finding.title}`);
+  }
+  for (const probeError of summary.errors ?? []) {
+    console.log(`  [error] ${probeError.operation} — ${probeError.message}`);
   }
   console.log("Next: `scout report` to compile, or `scout coverage` to see gaps.");
 }

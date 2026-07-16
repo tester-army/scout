@@ -230,6 +230,31 @@ describe("planSweep", () => {
     expect(planSweep([op({ method: "post", path: "/pets" })])).toEqual([]);
   });
 
+  it("skips a templated path whose variable has no declared parameter", () => {
+    // Spec defect: path has {recordId} but declares no path parameter. Must be
+    // skipped, never planned as happy-path (which would throw at execution).
+    const detailed = planSweepDetailed([op({ path: "/domains/records/{recordId}" })]);
+    expect(detailed.entries).toEqual([]);
+    expect(detailed.decisions).toEqual([
+      {
+        operation: "GET /domains/records/{recordId}",
+        disposition: "ineligible",
+        reason: "unsupported-path-constraints",
+      },
+    ]);
+  });
+
+  it("skips when a synthetic param cannot cover every path template variable", () => {
+    // One declared+synthesizable param, but the path has a second, uncovered var.
+    const plan = planSweep([
+      op({
+        path: "/domains/{domain}/records/{recordId}",
+        parameters: [{ name: "recordId", in: "path", required: true }],
+      }),
+    ]);
+    expect(plan).toEqual([]);
+  });
+
   it("explains ineligible probes", () => {
     const detailed = planSweepDetailed(
       [
@@ -302,6 +327,28 @@ describe("runSweep", () => {
     });
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(readLatestSweepRun(executor.cwd)?.stopReason).toBe("budget-exhausted");
+  });
+
+  it("records a probe error and continues the batch instead of aborting", async () => {
+    const operations = [op({ path: "/a" }), op({ path: "/b" })];
+    const executor = context(operations, 10);
+    const fetchSpy = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("socket hang up"))
+      .mockResolvedValueOnce(
+        new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
+      );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const summary = await runSweep(executor, operations);
+
+    expect(summary).toMatchObject({
+      probesRun: 1,
+      probesErrored: 1,
+      stopReason: "completed",
+    });
+    expect(summary.errors?.[0]?.operation).toBe("GET /a");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it("stops cleanly after a 429 without recording a finding for it", async () => {
