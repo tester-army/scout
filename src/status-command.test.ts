@@ -62,6 +62,7 @@ describe("status command", () => {
         baseUrl: "https://api.test",
         requestsUsed: 3,
         requestBudget: 20,
+        budgetRemaining: 17,
         rateLimit: 2,
         findings: 1,
       },
