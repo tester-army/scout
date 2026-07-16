@@ -11,6 +11,7 @@ import { ensureSessionDirGitignored, initSession } from "./session-store.js";
 import { discoverSpecUrl, emptyLoadedSpec, extractOperations, loadSpec } from "./spec-loader.js";
 import { normalizeApiBaseUrl } from "./url.js";
 import { ensureNotCancelled, isInteractive } from "./utils.js";
+import { countUncompilableSchemaOperations } from "./verdict.js";
 
 export type InitOptions = {
   json?: boolean;
@@ -171,6 +172,16 @@ export async function runInitCommand(
   const session = initSession(loadedSpec);
 
   const operations = extractOperations(loadedSpec.spec);
+
+  if (!specLess) {
+    const uncompilable = countUncompilableSchemaOperations(operations, loadedSpec.specVersion);
+    if (uncompilable.count > 0) {
+      const examples = uncompilable.operations.slice(0, 3).join(", ");
+      loadedSpec.warnings.push(
+        `${uncompilable.count} operation(s) have response schemas scout cannot compile (unresolved $refs or invalid schema); those responses report "schema: n/a" and are not validated. Examples: ${examples}${uncompilable.count > 3 ? ", …" : ""}.`,
+      );
+    }
+  }
 
   const result: InitResult = {
     runId: session.runId,
