@@ -133,6 +133,37 @@ function isUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
 }
 
+/** Detects a JSON Schema document from raw fetched text, for the error hint. */
+function rawTextLooksLikeJsonSchema(text: string | undefined): boolean {
+  if (!text) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object") return false;
+  return looksLikeJsonSchema(parsed as OpenApiDocument);
+}
+
+/**
+ * Heuristically detects a JSON Schema document mistaken for an OpenAPI spec:
+ * JSON Schema markers present, no `paths`/`swagger`/`openapi`. Used only to
+ * produce a more actionable error hint.
+ */
+function looksLikeJsonSchema(document: OpenApiDocument): boolean {
+  const record = document as unknown as Record<string, unknown>;
+  if (record.paths || record.swagger || record.openapi) return false;
+  const schemaField = typeof record.$schema === "string" ? record.$schema : "";
+  return (
+    schemaField.includes("json-schema.org") ||
+    "$defs" in record ||
+    "definitions" in record ||
+    "properties" in record ||
+    "$id" in record
+  );
+}
+
 type FetchedText = {
   ok: boolean;
   status: number;
@@ -357,10 +388,12 @@ export async function loadSpec(
   }
 
   let parsed: OpenApiDocument;
+  let rawText: string | undefined;
   try {
     if (remoteSource) {
       const response = await fetchText(resolvedSource, maxBytes);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      rawText = response.text;
       parsed = await parseRemoteSpec(resolvedSource, response.text);
     } else {
       parsed = (await SwaggerParser.parse(resolvedSource, {
@@ -372,7 +405,9 @@ export async function loadSpec(
       `Failed to parse spec from ${source}: ${error instanceof Error ? error.message : String(error)}`,
       {
         code: "SPEC_INVALID",
-        hint: "Ensure the source is valid OpenAPI 3.x or Swagger 2 JSON/YAML.",
+        hint: rawTextLooksLikeJsonSchema(rawText)
+          ? "This looks like a JSON Schema document, not an OpenAPI spec. Scout needs an OpenAPI 3.x or Swagger 2 document describing paths and operations — point it at the API's OpenAPI endpoint instead."
+          : "Ensure the source is valid OpenAPI 3.x or Swagger 2 JSON/YAML.",
         cause: error,
       },
     );
@@ -410,7 +445,9 @@ export async function loadSpec(
   if (!parsed.openapi && !converted) {
     throw new ScoutError(`Document from ${source} is not an OpenAPI 3.x or Swagger 2 spec.`, {
       code: "SPEC_INVALID",
-      hint: 'The document must declare an `openapi: 3.x` or `swagger: "2.0"` version field.',
+      hint: looksLikeJsonSchema(parsed)
+        ? "This looks like a JSON Schema document (it has `$schema`/`$defs`/`properties` but no `paths`), not an OpenAPI spec. Scout needs an OpenAPI 3.x or Swagger 2 document describing paths and operations — point it at the API's OpenAPI endpoint instead."
+        : 'The document must declare an `openapi: 3.x` or `swagger: "2.0"` version field.',
     });
   }
 
