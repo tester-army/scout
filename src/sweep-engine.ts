@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ScoutError } from "./errors.js";
 import {
@@ -8,7 +8,7 @@ import {
   type FindingSeverity,
 } from "./findings.js";
 import { executeCall, type CallResult, type ExecutorContext } from "./http-executor.js";
-import { getSessionDirPath, loadSessionState } from "./session-store.js";
+import { appendFileSecure, getSessionDirPath, loadSessionState } from "./session-store.js";
 import { operationKey, SAFE_METHODS, type SpecOperation } from "./spec-loader.js";
 
 const SYNTHETIC_STRING_ID = "scout-nonexistent-000000";
@@ -446,7 +446,10 @@ export function readLatestSweepRun(cwd = process.cwd()): SweepRunRecord | null {
 
 /** Persists one compact sweep run record for later report provenance. */
 function appendSweepRun(record: SweepRunRecord, cwd: string): void {
-  appendFileSync(join(getSessionDirPath(cwd), SWEEP_RUNS_FILENAME), `${JSON.stringify(record)}\n`);
+  appendFileSecure(
+    join(getSessionDirPath(cwd), SWEEP_RUNS_FILENAME),
+    `${JSON.stringify(record)}\n`,
+  );
 }
 
 /** Applies request and budget caps to a detailed plan. */

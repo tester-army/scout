@@ -12,7 +12,12 @@ import {
   type ResolvedPolicy,
   type ScoutProjectConfig,
 } from "./project-config.js";
-import { redactJsonSecrets, redactSecretsOnly, redactUrl } from "./redaction.js";
+import {
+  looksLikeUnredactedSecret,
+  redactJsonSecrets,
+  redactSecretsOnly,
+  redactUrl,
+} from "./redaction.js";
 import {
   appendRequestRecordForRun,
   loadCachedSpec,
@@ -85,6 +90,7 @@ export type CallResult = {
     bodyTruncated: boolean;
   };
   verdict: Verdict;
+  warnings?: string[];
 };
 
 /** Simple token bucket so sweeps cannot hammer a target API. */
@@ -870,6 +876,8 @@ export async function executeCall(
   const responseBody =
     bodyIsJson && !responsePreview.truncated ? redactedResponseBody : responsePreview.value;
 
+  const warnings = detectUnredactedSecretWarnings(redactedHeaders, redactedUrl);
+
   return {
     requestId,
     operation: operation ? operationKey(operation) : null,
@@ -888,5 +896,37 @@ export async function executeCall(
       bodyTruncated: downloadedBody.truncated || responsePreview.truncated,
     },
     verdict,
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
+}
+
+/**
+ * Flags outbound header or URL values that still look like live credentials
+ * after redaction. Scout can only redact secrets it can identify, so a literal
+ * token pasted into a non-secret-ish header would leak into output and the
+ * `.scout/` evidence log. Warn the operator to move it into an env reference.
+ */
+function detectUnredactedSecretWarnings(
+  redactedHeaders: Record<string, string>,
+  redactedUrl: string,
+): string[] {
+  const warnings: string[] = [];
+  for (const [name, value] of Object.entries(redactedHeaders)) {
+    if (looksLikeUnredactedSecret(value)) {
+      warnings.push(
+        `Header "${name}" appears to contain a literal credential that scout cannot redact. Pass secrets as environment references (e.g. --header '${name}: Bearer $TOKEN') so they stay out of output and the .scout/ evidence log.`,
+      );
+    }
+  }
+  try {
+    const search = new URL(redactedUrl).search;
+    if (search && looksLikeUnredactedSecret(decodeURIComponent(search))) {
+      warnings.push(
+        "The request URL query string appears to contain a literal credential that scout cannot redact. Move it into an env-referenced header or a scout.json authProfile.",
+      );
+    }
+  } catch {
+    // non-parseable URL: nothing to inspect
+  }
+  return warnings;
 }

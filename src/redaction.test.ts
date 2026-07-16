@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { redactJsonSecrets, redactMessage, redactSecretsOnly, redactUrl } from "./redaction.js";
+import {
+  looksLikeUnredactedSecret,
+  redactJsonSecrets,
+  redactMessage,
+  redactSecretsOnly,
+  redactUrl,
+} from "./redaction.js";
 
 describe("redactSecretsOnly", () => {
   it("masks exact resolved secrets without touching structure", () => {
@@ -68,5 +74,28 @@ describe("redactMessage", () => {
     expect(redactMessage("failed https://api.example.com/x?secret=1", [])).toBe(
       "failed https://api.example.com/x",
     );
+  });
+});
+
+describe("looksLikeUnredactedSecret", () => {
+  it("flags a surviving auth scheme value", () => {
+    expect(looksLikeUnredactedSecret("Bearer supersecrettoken123")).toBe(true);
+    expect(looksLikeUnredactedSecret("token supersecrettoken1234567890")).toBe(true);
+  });
+
+  it("flags a long high-entropy token", () => {
+    expect(looksLikeUnredactedSecret("ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7")).toBe(true);
+  });
+
+  it("does not flag already-redacted values", () => {
+    expect(looksLikeUnredactedSecret("[redacted]")).toBe(false);
+    expect(looksLikeUnredactedSecret("Bearer [redacted]")).toBe(false);
+  });
+
+  it("does not flag benign low-entropy header values", () => {
+    expect(looksLikeUnredactedSecret("application/json")).toBe(false);
+    expect(looksLikeUnredactedSecret("gzip, deflate, br")).toBe(false);
+    expect(looksLikeUnredactedSecret("no-cache")).toBe(false);
+    expect(looksLikeUnredactedSecret("en-US,en;q=0.9")).toBe(false);
   });
 });

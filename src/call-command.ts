@@ -206,6 +206,7 @@ export async function runCallCommand(
         hint: "Inspect the response body and adjust the path, e.g. --extract data.items[0].id.",
       });
     }
+    for (const warning of result.warnings ?? []) console.error(`warning: ${warning}`);
     console.log(stringifyExtracted(value));
     return;
   }
@@ -241,12 +242,15 @@ function renderCallHuman(result: {
     expectedStatuses: string[];
     schemaErrors: string[];
   };
+  warnings?: string[];
 }): void {
   const { verdict } = result;
   const line = verdict.ok ? log.success : log.error;
 
   line(`${result.request.method} ${result.request.url}`);
   log.message(verdict.summary);
+
+  for (const warning of result.warnings ?? []) log.warn(warning);
 
   if (result.operation) {
     log.message(

@@ -76,3 +76,35 @@ export function toRedactedError(error: unknown, secrets: Array<string | undefine
   const message = error instanceof Error ? error.message : String(error);
   return new Error(redactMessage(message, secrets), { cause: error });
 }
+
+const AUTH_SCHEME_RE = /\b(?:Bearer|Basic|Digest|Negotiate)\s+\S{8,}/i;
+const HIGH_ENTROPY_TOKEN_RE = /[A-Za-z0-9+/_.=-]{20,}/g;
+const MIN_TOKEN_ENTROPY_BITS = 3.2;
+
+/** Shannon entropy per character of a string, in bits. */
+function shannonEntropy(value: string): number {
+  const counts = new Map<string, number>();
+  for (const char of value) counts.set(char, (counts.get(char) ?? 0) + 1);
+  let bits = 0;
+  for (const count of counts.values()) {
+    const p = count / value.length;
+    bits -= p * Math.log2(p);
+  }
+  return bits;
+}
+
+/**
+ * Heuristically decides whether an already-redacted value still looks like it
+ * carries a live credential. Scout only redacts secrets it can identify (env
+ * references and secret-ish header/query/body names), so a literal token pasted
+ * into an arbitrary header would otherwise leak into output and artifacts. A
+ * surviving auth scheme or high-entropy token is a strong tell.
+ */
+export function looksLikeUnredactedSecret(value: string): boolean {
+  if (value.includes("[redacted]")) return false;
+  if (AUTH_SCHEME_RE.test(value)) return true;
+  for (const token of value.match(HIGH_ENTROPY_TOKEN_RE) ?? []) {
+    if (shannonEntropy(token) >= MIN_TOKEN_ENTROPY_BITS) return true;
+  }
+  return false;
+}

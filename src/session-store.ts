@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -76,6 +77,17 @@ function writeFileAtomic(path: string, content: string): void {
   const tempPath = `${path}.tmp-${randomUUID()}`;
   writeFileSync(tempPath, content, { encoding: "utf-8", mode: 0o600 });
   renameSync(tempPath, path);
+}
+
+/**
+ * Appends to an artifact file, forcing owner-only permissions. Evidence files
+ * can hold request/response data, so they must never be created world-readable
+ * even if the process umask is permissive.
+ */
+export function appendFileSecure(path: string, content: string): void {
+  const created = !existsSync(path);
+  appendFileSync(path, content, { mode: 0o600 });
+  if (created) chmodSync(path, 0o600);
 }
 
 /** Runs a short synchronous state transaction under a cross-process file lock. */
@@ -259,7 +271,7 @@ export function reserveRateLimitSlot(requestsPerSecond: number, cwd = process.cw
 
 /** Appends one redacted request/response record to requests.jsonl. */
 export function appendRequestRecord(record: RequestRecord, cwd = process.cwd()): void {
-  appendFileSync(join(getSessionDirPath(cwd), REQUESTS_FILENAME), `${JSON.stringify(record)}\n`);
+  appendFileSecure(join(getSessionDirPath(cwd), REQUESTS_FILENAME), `${JSON.stringify(record)}\n`);
 }
 
 /** Appends a request only while its owning run is still active. */
@@ -293,7 +305,7 @@ function appendArtifactForRun(
         hint: "Discard this result and retry it in the current run.",
       });
     }
-    appendFileSync(join(getSessionDirPath(cwd), filename), `${content}\n`);
+    appendFileSecure(join(getSessionDirPath(cwd), filename), `${content}\n`);
   });
 }
 
