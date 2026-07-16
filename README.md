@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="https://github.com/user-attachments/assets/e6fd88c4-8172-4a1c-9dab-ca8e3236d9fe" alt="scout" width="100%" />
+
 # scout
 
 **A guarded API testing harness for coding agents.**
