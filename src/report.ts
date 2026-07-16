@@ -36,6 +36,12 @@ export type ReportCoverage = Omit<CoverageSummary, "operations">;
 export type ReportJson = {
   summary: {
     passed: boolean;
+    /** True when no confirmed finding sits at or above the severity threshold. */
+    findingsGatePassed: boolean;
+    /** True when coverage, probe, and sweep-completeness gates are all met. */
+    completenessGatePassed: boolean;
+    /** CI exit code: 0 pass, 1 findings gate, 3 completeness gate. */
+    ciExitCode: 0 | 1 | 3;
     complete: boolean;
     incomplete: boolean;
     incompleteReasons: string[];
@@ -104,6 +110,16 @@ export function reportIncompleteReasons(input: ReportInput): string[] {
   return reasons;
 }
 
+/** Maps gate outcomes to a CI exit code: 1 findings > 3 completeness > 0 pass. */
+function computeCiExitCode(
+  findingsGatePassed: boolean,
+  completenessGatePassed: boolean,
+): 0 | 1 | 3 {
+  if (!findingsGatePassed) return 1;
+  if (!completenessGatePassed) return 3;
+  return 0;
+}
+
 /** Builds the machine-readable report payload. */
 export function buildReportJson(input: ReportInput): ReportJson {
   const bySeverity = countBySeverity(input.findings);
@@ -117,9 +133,18 @@ export function buildReportJson(input: ReportInput): ReportJson {
   const complete = incompleteReasons.length === 0;
   const { operations: _operations, ...coverage } = input.coverage;
 
+  const findingsGatePassed = findingsAtOrAboveThreshold === 0;
+  const completenessGatePassed = complete;
+  // Findings take precedence over completeness so a real bug is never masked
+  // by a coverage failure; distinct codes let CI tell them apart.
+  const ciExitCode: 0 | 1 | 3 = computeCiExitCode(findingsGatePassed, completenessGatePassed);
+
   return {
     summary: {
-      passed: findingsAtOrAboveThreshold === 0 && complete,
+      passed: findingsGatePassed && completenessGatePassed,
+      findingsGatePassed,
+      completenessGatePassed,
+      ciExitCode,
       complete,
       incomplete: !complete,
       incompleteReasons,

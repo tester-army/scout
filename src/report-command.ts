@@ -74,8 +74,10 @@ export async function runReportCommand(options: ReportOptions): Promise<void> {
     writeFileSync(options.jsonFile, `${JSON.stringify(reportJson, null, 2)}\n`);
   }
 
-  if (options.ci && !reportJson.summary.passed) {
-    process.exitCode = 1;
+  // Distinct CI exit codes so a real finding (1) is never confused with a
+  // completeness/coverage shortfall (3). See report.summary.ciExitCode.
+  if (options.ci && reportJson.summary.ciExitCode !== 0) {
+    process.exitCode = reportJson.summary.ciExitCode;
   }
 
   if (options.json || !isInteractive()) {

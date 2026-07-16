@@ -32,6 +32,8 @@ export type Finding = {
   description?: string;
   evidence?: string[];
   repro?: string;
+  /** Human note recorded when a finding is dismissed, for the audit trail. */
+  dismissReason?: string;
 };
 
 export type FindingStatus = NonNullable<Finding["status"]>;
@@ -66,17 +68,17 @@ export function parseCategory(value: string): FindingCategory {
   throw new Error(`--category must be one of: ${FINDING_CATEGORIES.join(", ")}`);
 }
 
-/** Returns the stable identity used to collapse repeated mechanical findings. */
+/**
+ * Returns the stable identity used to collapse repeated mechanical findings.
+ * Keyed by (source, category, endpoint, title) — deliberately NOT by `repro`,
+ * so the same contract issue surfaced by different probe kinds (e.g. an
+ * "Undocumented status 404" seen on the happy-path, no-auth, and invalid-auth
+ * probes) collapses into one finding instead of three.
+ */
 export function findingDeduplicationKey(
-  finding: Pick<Finding, "source" | "category" | "endpoint" | "title" | "repro">,
+  finding: Pick<Finding, "source" | "category" | "endpoint" | "title">,
 ): string {
-  return [
-    finding.source,
-    finding.category,
-    finding.endpoint,
-    finding.title,
-    finding.repro ?? "",
-  ].join("\u0000");
+  return [finding.source, finding.category, finding.endpoint, finding.title].join("\u0000");
 }
 
 /** Creates a finding with a stable mechanical id or a random agent-authored id. */
@@ -140,6 +142,7 @@ export function updateFindingStatus(
   status: FindingStatus,
   cwd = process.cwd(),
   expectedRunId?: string,
+  reason?: string,
 ): Finding {
   const update = () => {
     const findings = readFindings(cwd);
@@ -152,6 +155,12 @@ export function updateFindingStatus(
     }
 
     const updated = { ...findings[index], status } as Finding;
+    // A dismiss reason is part of the audit trail; any other transition clears it.
+    if (status === "dismissed" && reason?.trim()) {
+      updated.dismissReason = reason.trim();
+    } else {
+      delete updated.dismissReason;
+    }
     findings[index] = updated;
     const path = getFindingsFilePath(cwd);
     const temporaryPath = `${path}.tmp-${process.pid}-${Date.now()}`;

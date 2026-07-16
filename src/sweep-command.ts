@@ -36,10 +36,14 @@ export async function runSweepCommand(options: SweepOptions): Promise<void> {
 
   let findingsCreated = 0;
   const findings: Finding[] = [];
+  const seenFindingIds = new Set<string>();
   for (const finding of summary.findings) {
     const recorded = appendFinding(finding, context.cwd, summary.runId);
     if (recorded.created) findingsCreated += 1;
-    findings.push(recorded.finding);
+    if (!seenFindingIds.has(recorded.finding.id)) {
+      seenFindingIds.add(recorded.finding.id);
+      findings.push(recorded.finding);
+    }
   }
 
   const result = {

@@ -27,6 +27,7 @@ export type FindingListOptions = {
 
 export type FindingLifecycleOptions = {
   json?: boolean;
+  reason?: string;
 };
 
 /** Records an agent-authored finding. */
@@ -107,12 +108,20 @@ function runFindingLifecycleCommand(
   options: FindingLifecycleOptions,
 ): void {
   const state = loadSessionState();
-  const finding = updateFindingStatus(id, status, process.cwd(), state.runId);
+  const finding = updateFindingStatus(
+    id,
+    status,
+    process.cwd(),
+    state.runId,
+    status === "dismissed" ? options.reason : undefined,
+  );
   if (options.json || !isInteractive()) {
     console.log(stringifyJson({ updated: true, status, finding }));
     return;
   }
   console.log(
-    `${status === "confirmed" ? "Confirmed" : "Dismissed"} finding ${id}: ${finding.title}`,
+    `${status === "confirmed" ? "Confirmed" : "Dismissed"} finding ${id}: ${finding.title}${
+      finding.dismissReason ? ` (${finding.dismissReason})` : ""
+    }`,
   );
 }
