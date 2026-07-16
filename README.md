@@ -107,6 +107,15 @@ scout report --ci --severity-threshold high
 
 Use `scout reset` to start an isolated run while preserving `scout.json` and the cached spec. Explicit `init` also starts a fresh run and clears requests, findings, variables, and budget usage.
 
+### Exit codes and gating
+
+`--expect <status>` only changes the **verdict**; a mismatch does **not** set a non-zero exit code, so a bare `scout call --expect 200` in a shell loop will still exit `0`. To fail on a bad verdict, add `--fail-on-verdict` (exit `1` when the verdict fails), or gate a whole run with `scout report --ci` (exit `1` on confirmed findings, incomplete sweeps, or unmet coverage). Reserve exit `2` for tool/usage errors.
+
+```sh
+scout call GET /users/{id} --path-param id=42 --expect 200 --fail-on-verdict --json
+scout report --ci --severity-threshold high
+```
+
 ## Request chaining
 
 No shell glue needed to thread values between calls:
