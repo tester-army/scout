@@ -1,16 +1,23 @@
-<div align="center">
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/e6fd88c4-8172-4a1c-9dab-ca8e3236d9fe" alt="scout" />
+</p>
 
-<img src="https://github.com/user-attachments/assets/e6fd88c4-8172-4a1c-9dab-ca8e3236d9fe" alt="scout" width="100%" />
+<p align="center">
+  <a href="#quick-start"><strong>Quickstart</strong></a> |
+  <a href="#skill"><strong>Skill</strong></a> |
+  <a href="#why-not-just-give-your-agent-curl"><strong>Why scout</strong></a> |
+  <a href="#agent-workflow"><strong>Workflow</strong></a> |
+  <a href="#commands"><strong>Commands</strong></a> |
+  <a href="#findings-and-ci"><strong>Findings &amp; CI</strong></a> |
+  <a href="#safety-model"><strong>Safety</strong></a>
+</p>
 
-# scout
-
-**A guarded API testing harness for coding agents.**
-
-[![npm](https://img.shields.io/npm/v/@testerarmy/scout?color=cb3837&logo=npm)](https://www.npmjs.com/package/@testerarmy/scout)
-[![CI](https://github.com/tester-army/scout/actions/workflows/ci.yml/badge.svg)](https://github.com/tester-army/scout/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-
-</div>
+<p align="center">
+  <a href="https://www.npmjs.com/package/@testerarmy/scout"><img src="https://img.shields.io/npm/v/@testerarmy/scout?logo=npm&color=cb3837" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/@testerarmy/scout"><img src="https://img.shields.io/npm/dm/@testerarmy/scout?logo=npm" alt="npm downloads" /></a>
+  <a href="https://github.com/tester-army/scout/actions/workflows/ci.yml"><img src="https://github.com/tester-army/scout/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license" /></a>
+</p>
 
 Scout is the layer between a coding agent and a live API. It gives agents small OpenAPI views, guarded HTTP execution, deterministic negative probes, request chaining, structured findings, and honest coverage/reporting. It contains no LLM and sends no telemetry.
 
@@ -42,6 +49,20 @@ Rules: only test the API above, which I am authorizing. Do NOT send mutations
 ```
 
 `scout agent init` only copies the version-matched skill into `.agents/skills/scout/` and adds a discovery note to `AGENTS.md` - no remote installers. Prefer to drive it yourself? See [Quick start](#quick-start) below.
+
+## Skill
+
+Scout ships an [agent skill](./skills/scout/SKILL.md) that teaches your coding agent the authorization-first workflow: obtain scope, orient with `endpoints`/`schema`, build valid controls, run negative probes and fuzzing, validate findings, and report. Install it either way:
+
+```sh
+# bundled, version-matched with the CLI (also writes AGENTS.md discovery hints)
+npx @testerarmy/scout@latest agent init
+
+# or from the open agent skills ecosystem
+npx skills add tester-army/scout
+```
+
+Both drop the skill into `.agents/skills/scout/` so agents discover it automatically. The skill is the harness manual; you stay the operator who grants scope.
 
 ## Why not just give your agent `curl`?
 
