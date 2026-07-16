@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   DEFAULT_RATE_LIMIT_RPS,
   DEFAULT_REQUEST_BUDGET,
+  MAX_SPEC_BYTES_CEILING,
   PROJECT_CONFIG_FILENAME,
 } from "./constants.js";
 import { ScoutError } from "./errors.js";
@@ -28,6 +29,8 @@ const projectConfigSchema = z.strictObject({
   // request is treated as undocumented but all other guardrails still apply.
   spec: z.string().min(1).optional(),
   baseUrl: z.string().min(1),
+  // Max bytes to download for a remote spec. Omitted uses DEFAULT_MAX_SPEC_BYTES.
+  maxSpecBytes: z.number().int().positive().max(MAX_SPEC_BYTES_CEILING).optional(),
   headers: z.record(z.string(), z.string()).optional(),
   authProfiles: z.record(z.string(), authProfileSchema).optional(),
   policy: policySchema.optional(),
@@ -106,7 +109,7 @@ export function loadProjectConfig(options?: {
       .join("; ");
     throw new ScoutError(`Invalid scout.json at ${path}: ${issues}`, {
       code: "VALIDATION_ERROR",
-      hint: "Allowed keys: spec, baseUrl, headers, authProfiles, policy { allowMutations, allowedMethods, allowedPaths, rateLimit, budget }. Re-run `scout init` to regenerate.",
+      hint: "Allowed keys: spec, baseUrl, maxSpecBytes, headers, authProfiles, policy { allowMutations, allowedMethods, allowedPaths, rateLimit, budget }. Re-run `scout init` to regenerate.",
     });
   }
 

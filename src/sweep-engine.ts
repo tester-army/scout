@@ -73,6 +73,12 @@ export type SweepRunRecord = {
   complete: boolean;
 };
 
+export type SweepProbeError = {
+  operation: string;
+  kind?: ProbeKind;
+  message: string;
+};
+
 export type SweepSummary = {
   runId: string;
   probesPlanned: number;
@@ -80,10 +86,12 @@ export type SweepSummary = {
   probesRun: number;
   probesSkipped: number;
   probesCapped: number;
+  probesErrored: number;
   findingsDetected: number;
   stopReason: SweepStopReason;
   complete: boolean;
   findings: Finding[];
+  errors?: SweepProbeError[];
   plan?: SweepPlanDecision[];
 };
 
@@ -92,9 +100,15 @@ export type DetailedSweepPlan = {
   decisions: SweepPlanDecision[];
 };
 
+/** Extracts `{name}` template variables from a path template. */
+function pathTemplateNames(path: string): string[] {
+  return [...path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1] as string);
+}
+
 function isParameterFreeGet(operation: SpecOperation): boolean {
   return (
     operation.method === "get" &&
+    pathTemplateNames(operation.path).length === 0 &&
     operation.parameters.filter((param) => param.in === "path" || param.required).length === 0
   );
 }
@@ -205,7 +219,9 @@ export function planSweepDetailed(
       continue;
     }
 
-    const hasPathParams = operation.parameters.some((param) => param.in === "path");
+    const templateNames = pathTemplateNames(operation.path);
+    const hasPathParams =
+      templateNames.length > 0 || operation.parameters.some((param) => param.in === "path");
     const hasRequiredQueryParams = operation.parameters.some(
       (param) => param.in === "query" && param.required,
     );
@@ -215,7 +231,9 @@ export function planSweepDetailed(
     }
 
     const pathParam = syntheticPathParam(operation);
-    if (pathParam) {
+    // Only plan a probe when the synthetic value covers every path template
+    // variable; a leftover `{var}` would throw at execution and abort the run.
+    if (pathParam && templateNames.every((name) => name === pathParam.name)) {
       add({
         kind: "not-found-shape",
         operation,
@@ -501,6 +519,7 @@ export async function runSweep(
       probesRun: 0,
       probesSkipped,
       probesCapped: cappedPlan.capped,
+      probesErrored: 0,
       findingsDetected: 0,
       stopReason: "dry-run",
       complete: false,
@@ -510,7 +529,9 @@ export async function runSweep(
   }
 
   const findings: Finding[] = [];
+  const errors: SweepProbeError[] = [];
   let probesRun = 0;
+  let probesErrored = 0;
   let stopReason: Exclude<SweepStopReason, "dry-run"> = "completed";
   if (cappedPlan.capped > 0) {
     stopReason =
@@ -536,7 +557,15 @@ export async function runSweep(
         stopReason = "budget-exhausted";
         break;
       }
-      throw error;
+      // A single probe failing (network error, spec defect, unexpected
+      // guardrail) must not abort the whole batch. Record it and continue.
+      probesErrored += 1;
+      errors.push({
+        operation: operationKey(entry.operation),
+        ...(entry.kind ? { kind: entry.kind } : {}),
+        message: error instanceof Error ? error.message : String(error),
+      });
+      continue;
     }
     probesRun += 1;
     if (result.response.status === 429) {
@@ -571,9 +600,11 @@ export async function runSweep(
     probesRun,
     probesSkipped,
     probesCapped: cappedPlan.capped,
+    probesErrored,
     findingsDetected: findings.length,
     stopReason,
     complete,
     findings,
+    ...(errors.length > 0 ? { errors } : {}),
   };
 }

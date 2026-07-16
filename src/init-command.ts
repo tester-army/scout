@@ -1,4 +1,5 @@
 import { isCancel, confirm, intro, log, outro, text } from "@clack/prompts";
+import { MAX_SPEC_BYTES_CEILING } from "./constants.js";
 import { ScoutError } from "./errors.js";
 import { printWarning, stringifyJson } from "./output.js";
 import {
@@ -19,6 +20,8 @@ export type InitOptions = {
   allowMethod?: string[];
   allowPath?: string[];
   discover?: boolean;
+  /** Max spec download size in MiB (converted to bytes and persisted). */
+  maxSpecMb?: number;
 };
 
 type InitResult = {
@@ -50,6 +53,28 @@ function resolveBaseUrlSource(input: {
     return "spec";
   }
   return "prompt";
+}
+
+/**
+ * Resolves the effective spec download cap in bytes: `--max-spec-mb` flag
+ * (validated against the hard ceiling) takes precedence over the persisted
+ * `maxSpecBytes`. Returns undefined to let the loader use its default.
+ */
+export function resolveMaxSpecBytes(
+  options: InitOptions,
+  existing?: ScoutProjectConfig,
+): number | undefined {
+  if (options.maxSpecMb !== undefined) {
+    const bytes = options.maxSpecMb * 1024 * 1024;
+    if (bytes < 1 || bytes > MAX_SPEC_BYTES_CEILING) {
+      throw new ScoutError(
+        `--max-spec-mb must be between 1 and ${Math.floor(MAX_SPEC_BYTES_CEILING / (1024 * 1024))}.`,
+        { code: "VALIDATION_ERROR" },
+      );
+    }
+    return bytes;
+  }
+  return existing?.maxSpecBytes;
 }
 
 /** Parses repeated `--header 'Name: Value'` flags into a header map. */
@@ -84,6 +109,7 @@ export async function runInitCommand(
   const existing = loadProjectConfig();
   const interactive = isInteractive() && !options.json;
   const flagHeaders = parseHeaderFlags(options.header);
+  const maxSpecBytes = resolveMaxSpecBytes(options, existing?.config);
 
   const shouldHydrateOnly =
     existing !== null &&
@@ -93,6 +119,7 @@ export async function runInitCommand(
     (options.allowMethod ?? []).length === 0 &&
     (options.allowPath ?? []).length === 0 &&
     !options.discover &&
+    options.maxSpecMb === undefined &&
     Object.keys(flagHeaders).length === 0;
 
   if (interactive && !shouldHydrateOnly) {
@@ -103,7 +130,9 @@ export async function runInitCommand(
   let loadedSpec;
   if (shouldHydrateOnly && existing) {
     config = existing.config;
-    loadedSpec = config.spec ? await loadSpec(config.spec) : emptyLoadedSpec();
+    loadedSpec = config.spec
+      ? await loadSpec(config.spec, { ...(maxSpecBytes ? { maxBytes: maxSpecBytes } : {}) })
+      : emptyLoadedSpec();
   } else {
     const hasNewSpec = Boolean(specArg || options.discover);
     const specSource = await resolveSpecSource({
@@ -111,8 +140,12 @@ export async function runInitCommand(
       options,
       existing: existing?.config,
       interactive,
+      maxSpecBytes,
     });
-    loadedSpec = specSource === undefined ? emptyLoadedSpec() : await loadSpec(specSource);
+    loadedSpec =
+      specSource === undefined
+        ? emptyLoadedSpec()
+        : await loadSpec(specSource, { ...(maxSpecBytes ? { maxBytes: maxSpecBytes } : {}) });
     config = await buildConfig({
       specSource,
       options,
@@ -120,6 +153,7 @@ export async function runInitCommand(
       existing: hasNewSpec ? undefined : existing?.config,
       flagHeaders,
       specDefaultBaseUrl: loadedSpec.defaultBaseUrl,
+      maxSpecBytes,
     });
   }
 
@@ -208,8 +242,9 @@ async function buildConfig(input: {
   existing?: ScoutProjectConfig;
   flagHeaders: Record<string, string>;
   specDefaultBaseUrl?: string;
+  maxSpecBytes?: number;
 }): Promise<ScoutProjectConfig> {
-  const { options, interactive, existing, flagHeaders, specDefaultBaseUrl } = input;
+  const { options, interactive, existing, flagHeaders, specDefaultBaseUrl, maxSpecBytes } = input;
 
   // Precedence: --base-url flag > existing scout.json > spec servers[0].url > prompt.
   let baseUrl = options.baseUrl ?? existing?.baseUrl ?? specDefaultBaseUrl;
@@ -254,6 +289,7 @@ async function buildConfig(input: {
     $schema: "https://tester.army/scout.schema.json",
     ...(input.specSource ? { spec: input.specSource } : {}),
     baseUrl: normalizeApiBaseUrl(baseUrl),
+    ...(maxSpecBytes ? { maxSpecBytes } : {}),
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
     ...(existing?.authProfiles ? { authProfiles: existing.authProfiles } : {}),
     policy: {
@@ -269,8 +305,9 @@ async function resolveSpecSource(input: {
   options: InitOptions;
   existing?: ScoutProjectConfig;
   interactive: boolean;
+  maxSpecBytes?: number;
 }): Promise<string | undefined> {
-  const { specArg, options, existing, interactive } = input;
+  const { specArg, options, existing, interactive, maxSpecBytes } = input;
 
   if (specArg) {
     return specArg;
@@ -284,7 +321,7 @@ async function resolveSpecSource(input: {
         hint: "Run `scout init --discover --base-url https://api.example.com`.",
       });
     }
-    return discoverSpecUrl(baseUrl);
+    return maxSpecBytes ? discoverSpecUrl(baseUrl, maxSpecBytes) : discoverSpecUrl(baseUrl);
   }
 
   if (existing?.spec) {

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import SwaggerParser from "@apidevtools/swagger-parser";
 import { convertObj } from "swagger2openapi";
+import { DEFAULT_MAX_SPEC_BYTES } from "./constants.js";
 import { ScoutError } from "./errors.js";
 
 export const HTTP_METHODS = [
@@ -30,7 +31,6 @@ const DISCOVERY_PATHS = [
 ];
 
 const FETCH_TIMEOUT_MS = 5000;
-const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
@@ -140,11 +140,11 @@ type FetchedText = {
 };
 
 /** Reads a response body without allowing unbounded buffering. */
-async function readLimitedText(response: Response): Promise<string> {
+async function readLimitedText(response: Response, maxBytes: number): Promise<string> {
   const contentLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
     await response.body?.cancel();
-    throw new Error(`Response exceeds ${MAX_RESPONSE_BYTES} bytes`);
+    throw new Error(specSizeMessage(maxBytes));
   }
 
   if (!response.body) return "";
@@ -158,9 +158,9 @@ async function readLimitedText(response: Response): Promise<string> {
     const { done, value } = await reader.read();
     if (done) break;
     bytesRead += value.byteLength;
-    if (bytesRead > MAX_RESPONSE_BYTES) {
+    if (bytesRead > maxBytes) {
       await reader.cancel();
-      throw new Error(`Response exceeds ${MAX_RESPONSE_BYTES} bytes`);
+      throw new Error(specSizeMessage(maxBytes));
     }
     text += decoder.decode(value, { stream: true });
   }
@@ -168,8 +168,14 @@ async function readLimitedText(response: Response): Promise<string> {
   return text + decoder.decode();
 }
 
+/** Builds a size-limit error message that points at the override flag. */
+function specSizeMessage(maxBytes: number): string {
+  const mib = Math.floor(maxBytes / (1024 * 1024));
+  return `Response exceeds ${maxBytes} bytes (${mib} MiB); raise it with --max-spec-mb`;
+}
+
 /** Fetches text with a total timeout, bounded body, and same-host redirects. */
-async function fetchText(url: string): Promise<FetchedText> {
+async function fetchText(url: string, maxBytes: number): Promise<FetchedText> {
   const original = new URL(url);
   let current = original;
   const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
@@ -195,7 +201,7 @@ async function fetchText(url: string): Promise<FetchedText> {
       return { ok: false, status: response.status, text: "" };
     }
 
-    return { ok: true, status: response.status, text: await readLimitedText(response) };
+    return { ok: true, status: response.status, text: await readLimitedText(response, maxBytes) };
   }
 }
 
@@ -300,7 +306,10 @@ export function resolveServerBaseUrl(spec: OpenApiDocument, source: string): str
  * Probes common well-known paths under a base URL for an OpenAPI spec.
  * Returns the first URL that responds 200 with a JSON/YAML-looking body.
  */
-export async function discoverSpecUrl(baseUrl: string): Promise<string> {
+export async function discoverSpecUrl(
+  baseUrl: string,
+  maxBytes: number = DEFAULT_MAX_SPEC_BYTES,
+): Promise<string> {
   const base = baseUrl.replace(/\/$/, "");
   const attempted: string[] = [];
 
@@ -308,7 +317,7 @@ export async function discoverSpecUrl(baseUrl: string): Promise<string> {
     const candidate = `${base}${path}`;
     attempted.push(candidate);
     try {
-      const response = await fetchText(candidate);
+      const response = await fetchText(candidate, maxBytes);
       if (!response.ok) continue;
       const text = response.text;
       const trimmed = text.trim();
@@ -331,10 +340,14 @@ export async function discoverSpecUrl(baseUrl: string): Promise<string> {
  * URL or local file. Imperfect specs degrade to warnings instead of hard
  * failures — broken refs become spec-quality findings later, not crashes.
  */
-export async function loadSpec(source: string): Promise<LoadedSpec> {
+export async function loadSpec(
+  source: string,
+  options: { maxBytes?: number } = {},
+): Promise<LoadedSpec> {
   const warnings: string[] = [];
   const remoteSource = isUrl(source);
   const resolvedSource = remoteSource ? source : resolve(source);
+  const maxBytes = options.maxBytes ?? DEFAULT_MAX_SPEC_BYTES;
 
   if (!isUrl(source) && !existsSync(resolvedSource)) {
     throw new ScoutError(`Spec file not found: ${resolvedSource}`, {
@@ -346,7 +359,7 @@ export async function loadSpec(source: string): Promise<LoadedSpec> {
   let parsed: OpenApiDocument;
   try {
     if (remoteSource) {
-      const response = await fetchText(resolvedSource);
+      const response = await fetchText(resolvedSource, maxBytes);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       parsed = await parseRemoteSpec(resolvedSource, response.text);
     } else {

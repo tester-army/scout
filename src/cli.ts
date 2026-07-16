@@ -144,6 +144,11 @@ Examples:
     .option("--allow-method <method>", "scope requests to an HTTP method", collect, [])
     .option("--allow-path <glob>", "scope requests to an OpenAPI path glob", collect, [])
     .option("--discover", "probe well-known paths for a spec under --base-url")
+    .option(
+      "--max-spec-mb <mb>",
+      "max spec download size in MiB (default 25, max 100)",
+      parseIntOption("--max-spec-mb"),
+    )
     .option("--json", "output as JSON")
     .addHelpText(
       "after",
@@ -153,6 +158,7 @@ Examples:
   scout init openapi.yaml --base-url https://api.example.com --header 'Authorization: Bearer $API_TOKEN'
   scout init --discover --base-url https://api.example.com
   scout init --base-url https://api.example.com   # spec-less: no OpenAPI spec required
+  scout init https://openapi.vercel.sh/ --max-spec-mb 50   # large remote spec
   scout init --allow-mutations
 `,
     )
