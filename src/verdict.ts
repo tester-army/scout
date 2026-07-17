@@ -95,14 +95,14 @@ const validatorCache = new WeakMap<object, ValidateFunction | null>();
 function getAjv(specVersion: string): Ajv {
   if (specVersion.startsWith("3.1")) {
     if (!ajv31) {
-      ajv31 = new Ajv2020({ strict: false, allErrors: true, validateFormats: true });
+      ajv31 = new Ajv2020({ strict: false, allErrors: true, validateFormats: true, logger: false });
       addFormats(ajv31);
     }
     return ajv31;
   }
 
   if (!ajv30) {
-    ajv30 = new Ajv({ strict: false, allErrors: true, validateFormats: true });
+    ajv30 = new Ajv({ strict: false, allErrors: true, validateFormats: true, logger: false });
     addFormats(ajv30);
   }
   return ajv30;
@@ -112,32 +112,72 @@ function getAjv(specVersion: string): Ajv {
  * Converts OpenAPI 3.0 `nullable: true` into JSON Schema `type: [..., "null"]`
  * so ajv validates null values the way the spec author intended.
  */
-function transformNullable(schema: unknown): unknown {
-  if (Array.isArray(schema)) {
-    return schema.map(transformNullable);
-  }
+function transformNullable(schema: unknown, memo: Map<object, unknown>): unknown {
   if (!schema || typeof schema !== "object") {
     return schema;
   }
+  const existing = memo.get(schema);
+  if (existing !== undefined) {
+    return existing;
+  }
+  if (Array.isArray(schema)) {
+    const items: unknown[] = [];
+    memo.set(schema, items);
+    for (const item of schema) items.push(transformNullable(item, memo));
+    return items;
+  }
 
   const result: Record<string, unknown> = {};
+  memo.set(schema, result);
   for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
-    result[key] = transformNullable(value);
+    result[key] = transformNullable(value, memo);
   }
 
   if (result.nullable === true) {
     delete result.nullable;
+    if (Array.isArray(result.enum) && !result.enum.includes(null)) {
+      result.enum = [...result.enum, null];
+    }
     if (typeof result.type === "string") {
       result.type = [result.type, "null"];
     } else if (Array.isArray(result.type) && !result.type.includes("null")) {
       result.type = [...result.type, "null"];
+    } else if (result.type === undefined) {
+      // `nullable: true` beside anyOf/oneOf/$ref (no `type`): allow null via
+      // a union branch, since bare `type: "null"` would reject everything else.
+      for (const keyword of ["anyOf", "oneOf"] as const) {
+        if (Array.isArray(result[keyword])) {
+          result[keyword] = [...(result[keyword] as unknown[]), { type: "null" }];
+          break;
+        }
+      }
     }
   }
 
   return result;
 }
 
-function compileValidator(schema: object, specVersion: string): ValidateFunction | null {
+const transformedComponentsCache = new WeakMap<object, unknown>();
+
+function prepareComponents(components: object, specVersion: string): unknown {
+  if (specVersion.startsWith("3.1")) return components;
+  const cached = transformedComponentsCache.get(components);
+  if (cached !== undefined) return cached;
+  const transformed = transformNullable(components, new Map());
+  transformedComponentsCache.set(components, transformed);
+  return transformed;
+}
+
+/**
+ * Compiles a response/request schema, resolving any `#/components/...` refs
+ * that survive dereferencing (circular refs are intentionally left as `$ref`
+ * nodes) by attaching the spec's components to the compiled schema root.
+ */
+function compileValidator(
+  schema: object,
+  specVersion: string,
+  components?: object,
+): ValidateFunction | null {
   const cached = validatorCache.get(schema);
   if (cached !== undefined) {
     return cached;
@@ -147,8 +187,12 @@ function compileValidator(schema: object, specVersion: string): ValidateFunction
   try {
     const prepared = specVersion.startsWith("3.1")
       ? schema
-      : (transformNullable(structuredClone(schema)) as object);
-    validator = getAjv(specVersion).compile(prepared);
+      : (transformNullable(schema, new Map()) as object);
+    const root =
+      components && !("components" in prepared)
+        ? { ...prepared, components: prepareComponents(components, specVersion) }
+        : prepared;
+    validator = getAjv(specVersion).compile(root);
   } catch {
     validator = null;
   }
@@ -167,6 +211,7 @@ function compileValidator(schema: object, specVersion: string): ValidateFunction
 export function countUncompilableSchemaOperations(
   operations: SpecOperation[],
   specVersion: string,
+  components?: object,
 ): { count: number; operations: string[] } {
   const uncompilable: string[] = [];
   for (const operation of operations) {
@@ -177,7 +222,7 @@ export function countUncompilableSchemaOperations(
         const schema = media?.schema;
         if (!schema || (typeof schema !== "object" && typeof schema !== "boolean")) continue;
         if (typeof schema === "boolean") continue;
-        if (compileValidator(schema, specVersion) === null) {
+        if (compileValidator(schema, specVersion, components) === null) {
           hasUncompilable = true;
           break;
         }
@@ -230,10 +275,11 @@ export function validateSchemaValue(
   schema: object | boolean,
   specVersion: string,
   value: unknown,
+  components?: object,
 ): { valid: boolean; errors: string[] } | null {
   if (schema === true) return { valid: true, errors: [] };
   if (schema === false) return { valid: false, errors: ["(root) boolean schema is false"] };
-  const validator = compileValidator(schema, specVersion);
+  const validator = compileValidator(schema, specVersion, components);
   if (!validator) return null;
   const valid = validator(value);
   return {
@@ -294,9 +340,11 @@ function selectContentSchema(
 }
 
 /** Builds the mechanical verdict scout attaches to every executed request. */
-export function buildVerdict(options: {
+type BuildVerdictOptions = {
   operation: SpecOperation | null;
   specVersion: string;
+  /** Spec `components`, used to resolve `$ref`s left by circular dereferencing. */
+  components?: object;
   status: number;
   contentType?: string;
   body: unknown;
@@ -304,21 +352,13 @@ export function buildVerdict(options: {
   latencyMs: number;
   expect?: number;
   redacted: boolean;
-}): Verdict {
+};
+
+export function buildVerdict(options: BuildVerdictOptions): Verdict {
   return finalizeVerdict(buildVerdictCore(options));
 }
 
-function buildVerdictCore(options: {
-  operation: SpecOperation | null;
-  specVersion: string;
-  status: number;
-  contentType?: string;
-  body: unknown;
-  bodyIsJson: boolean;
-  latencyMs: number;
-  expect?: number;
-  redacted: boolean;
-}): VerdictCore {
+function buildVerdictCore(options: BuildVerdictOptions): VerdictCore {
   const { operation, status } = options;
 
   const base = {
@@ -395,7 +435,12 @@ function buildVerdictCore(options: {
     };
   }
 
-  const validation = validateSchemaValue(schema, options.specVersion, options.body);
+  const validation = validateSchemaValue(
+    schema,
+    options.specVersion,
+    options.body,
+    options.components,
+  );
   if (!validation) {
     return {
       ...base,

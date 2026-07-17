@@ -174,7 +174,11 @@ export async function runInitCommand(
   const operations = extractOperations(loadedSpec.spec);
 
   if (!specLess) {
-    const uncompilable = countUncompilableSchemaOperations(operations, loadedSpec.specVersion);
+    const uncompilable = countUncompilableSchemaOperations(
+      operations,
+      loadedSpec.specVersion,
+      loadedSpec.spec.components,
+    );
     if (uncompilable.count > 0) {
       const examples = uncompilable.operations.slice(0, 3).join(", ");
       loadedSpec.warnings.push(

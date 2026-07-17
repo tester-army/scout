@@ -43,6 +43,8 @@ export type FuzzPlanOptions = {
   maxCases?: number;
   oversizedLength?: number;
   specVersion?: string;
+  /** Spec `components`, used to resolve `$ref`s left by circular dereferencing. */
+  components?: object;
 };
 
 export type FuzzRunOptions = FuzzPlanOptions & {
@@ -424,7 +426,12 @@ export function planFuzzCases(
       if (Buffer.byteLength(candidate.rawBody, "utf-8") > MAX_FUZZ_BODY_BYTES) return;
     } else {
       if (fuzzBodySize(candidate.body) > MAX_FUZZ_BODY_BYTES) return;
-      const validation = validateSchemaValue(schemaInput, specVersion, candidate.body);
+      const validation = validateSchemaValue(
+        schemaInput,
+        specVersion,
+        candidate.body,
+        options.components,
+      );
       if (validation) {
         if (candidate.expectedReject && validation.valid) return;
         evaluated = { ...candidate, expectedReject: !validation.valid };
