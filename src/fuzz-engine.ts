@@ -162,13 +162,23 @@ function prepareRequestSchema(
   return result;
 }
 
-/** Returns a request-body schema from the operation's first JSON-compatible media type. */
+/**
+ * Returns a request-body schema from the operation's first JSON-compatible
+ * media type, falling back to application/x-www-form-urlencoded (whose
+ * schemas are the same JSON Schema objects; the executor form-encodes
+ * structured bodies for form-only operations).
+ */
 export function selectJsonRequestSchema(operation: SpecOperation): RequestSchema | null {
   const content = operation.requestBody?.content ?? {};
-  const mediaType = Object.keys(content).find((key) => {
-    const normalized = key.toLowerCase();
-    return normalized === "application/json" || normalized.endsWith("+json");
-  });
+  const keys = Object.keys(content);
+  const mediaType =
+    keys.find((key) => {
+      const normalized = key.toLowerCase();
+      return normalized === "application/json" || normalized.endsWith("+json");
+    }) ??
+    keys.find(
+      (key) => key.split(";")[0]?.trim().toLowerCase() === "application/x-www-form-urlencoded",
+    );
   const schema = mediaType ? content[mediaType]?.schema : undefined;
   return typeof schema === "boolean" || (schema && typeof schema === "object")
     ? (prepareRequestSchema(schema) as RequestSchema)

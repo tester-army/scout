@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_RESPONSE_DOWNLOAD_BYTES, MAX_RESPONSE_PREVIEW_BYTES } from "./constants.js";
 import {
+  encodeFormBody,
   executeCall,
   matchOperation,
   RateLimiter,
   resolveEnvRefs,
+  selectRequestContentType,
   type ExecutorContext,
 } from "./http-executor.js";
 import type { SpecOperation } from "./spec-loader.js";
@@ -124,6 +126,50 @@ describe("RateLimiter", () => {
     await limiter.take();
     await limiter.take();
     expect(Date.now() - start).toBeGreaterThanOrEqual(30);
+  });
+});
+
+describe("selectRequestContentType", () => {
+  const withContent = (content: Record<string, { schema?: unknown }>): SpecOperation => ({
+    ...op("post", "/pets"),
+    requestBody: { required: true, content },
+  });
+
+  it("defaults to JSON without an operation or request body", () => {
+    expect(selectRequestContentType(null)).toBe("application/json");
+    expect(selectRequestContentType(op("post", "/pets"))).toBe("application/json");
+  });
+
+  it("prefers JSON when the spec declares both", () => {
+    expect(
+      selectRequestContentType(
+        withContent({ "application/json": {}, "application/x-www-form-urlencoded": {} }),
+      ),
+    ).toBe("application/json");
+  });
+
+  it("selects form encoding for form-only operations", () => {
+    expect(selectRequestContentType(withContent({ "application/x-www-form-urlencoded": {} }))).toBe(
+      "application/x-www-form-urlencoded",
+    );
+  });
+});
+
+describe("encodeFormBody", () => {
+  it("encodes flat, nested, and array values with bracket notation", () => {
+    expect(
+      encodeFormBody({
+        name: "a b",
+        metadata: { source: "scout" },
+        items: [{ price: 5 }],
+        nullable: null,
+        skipped: undefined,
+      }),
+    ).toBe("name=a%20b&metadata%5Bsource%5D=scout&items%5B0%5D%5Bprice%5D=5&nullable=");
+  });
+
+  it("encodes non-object bodies as an empty string", () => {
+    expect(encodeFormBody("scalar")).toBe("");
   });
 });
 
@@ -359,6 +405,34 @@ describe("executeCall request security", () => {
     expect(result.request.body).toBe('{"token":"[redacted]"');
     const record = JSON.parse(readFileSync(join(cwd, ".scout", "requests.jsonl"), "utf-8"));
     expect(record.requestBody).toBe('{"token":"[redacted]"');
+  });
+
+  it("form-encodes --data bodies for form-only operations", async () => {
+    const formOp: SpecOperation = {
+      ...op("post", "/pets"),
+      requestBody: {
+        required: true,
+        content: { "application/x-www-form-urlencoded": { schema: { type: "object" } } },
+      },
+    };
+    const fetchMock = vi.fn(
+      async () =>
+        new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await executeCall(createTestContext(cwd, {}, [formOp]), {
+      method: "post",
+      path: "/pets",
+      source: "call",
+      body: { name: "rex", metadata: { source: "scout" } },
+    });
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(init.body).toBe("name=rex&metadata%5Bsource%5D=scout");
+    expect(init.headers).toMatchObject({
+      "Content-Type": "application/x-www-form-urlencoded",
+    });
   });
 
   it("omits configured and per-call credentials for missing-auth probes", async () => {
