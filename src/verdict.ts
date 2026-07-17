@@ -1,4 +1,4 @@
-import { Ajv, type ValidateFunction } from "ajv";
+import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
 import addFormats from "ajv-formats";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { operationKey, type SpecOperation, type SpecResponse } from "./spec-loader.js";
@@ -189,6 +189,42 @@ export function countUncompilableSchemaOperations(
   return { count: uncompilable.length, operations: uncompilable };
 }
 
+/**
+ * Renders one ajv error as a human-actionable string, surfacing the
+ * keyword-specific detail (e.g. which additional property was found,
+ * which enum values are allowed) that `error.message` alone omits.
+ */
+function formatAjvError(error: ErrorObject): string {
+  const path = error.instancePath || "(root)";
+  const message = error.message ?? "invalid";
+  const detail = describeAjvErrorParams(error);
+  return detail ? `${path} ${message} (${detail})` : `${path} ${message}`;
+}
+
+function describeAjvErrorParams(error: ErrorObject): string | null {
+  const params = error.params as Record<string, unknown>;
+  switch (error.keyword) {
+    case "additionalProperties":
+      return `found: ${String(params.additionalProperty)}`;
+    case "unevaluatedProperties":
+      return `found: ${String(params.unevaluatedProperty)}`;
+    case "enum": {
+      const allowed = params.allowedValues;
+      return Array.isArray(allowed) ? `allowed: ${allowed.map(String).join(", ")}` : null;
+    }
+    case "const":
+      return `allowed: ${JSON.stringify(params.allowedValue)}`;
+    case "oneOf": {
+      const passing = params.passingSchemas;
+      return Array.isArray(passing) && passing.length > 0
+        ? `matched schemas at indexes: ${passing.join(", ")}`
+        : "matched none";
+    }
+    default:
+      return null;
+  }
+}
+
 /** Validates one JSON-compatible value against an OpenAPI response or request schema. */
 export function validateSchemaValue(
   schema: object | boolean,
@@ -202,11 +238,7 @@ export function validateSchemaValue(
   const valid = validator(value);
   return {
     valid: Boolean(valid),
-    errors: valid
-      ? []
-      : (validator.errors ?? []).map(
-          (error) => `${error.instancePath || "(root)"} ${error.message ?? "invalid"}`,
-        ),
+    errors: valid ? [] : (validator.errors ?? []).map(formatAjvError),
   };
 }
 
