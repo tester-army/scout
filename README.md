@@ -9,7 +9,7 @@
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license" /></a>
 </p>
 
-Scout is an API testing CLI built for coding agents. It limits requests to a configured host, blocks writes by default, redacts credentials, and records results as structured findings and coverage reports. It contains no LLM and sends no telemetry.
+Scout is an OpenAPI-driven API testing CLI built for AI agents. It parses your spec, executes instrumented requests, and records structured findings and coverage reports - while limiting requests to a configured host, blocking writes by default, and redacting credentials. It allows your agent to test your API before you deploy it.
 
 ## Use Scout with an agent
 
