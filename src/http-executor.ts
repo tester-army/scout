@@ -202,6 +202,61 @@ export function matchOperation(
   return null;
 }
 
+/**
+ * Picks the wire format for a structured `--data` body from the operation's
+ * declared request content types. JSON wins whenever the spec allows it;
+ * form encoding is used only when the spec declares form-urlencoded and no
+ * JSON variant, so JSON-first APIs keep their existing behavior.
+ */
+export function selectRequestContentType(
+  operation: SpecOperation | null,
+): "application/json" | "application/x-www-form-urlencoded" {
+  const contentTypes = Object.keys(operation?.requestBody?.content ?? {}).map((type) =>
+    type.split(";")[0]?.trim().toLowerCase(),
+  );
+  const hasJson = contentTypes.some(
+    (type) => type === "application/json" || (type?.endsWith("+json") ?? false),
+  );
+  if (!hasJson && contentTypes.includes("application/x-www-form-urlencoded")) {
+    return "application/x-www-form-urlencoded";
+  }
+  return "application/json";
+}
+
+/**
+ * Serializes a JSON-compatible value as application/x-www-form-urlencoded
+ * using bracket notation for nested objects and arrays
+ * (e.g. `metadata[key]=v`, `items[0][price]=p`), the convention used by
+ * form-encoded APIs like Stripe.
+ */
+export function encodeFormBody(body: unknown): string {
+  const pairs: string[] = [];
+  const append = (key: string, value: unknown): void => {
+    if (value === undefined) return;
+    if (value === null) {
+      pairs.push(`${encodeURIComponent(key)}=`);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => append(`${key}[${index}]`, item));
+      return;
+    }
+    if (typeof value === "object") {
+      for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+        append(`${key}[${childKey}]`, childValue);
+      }
+      return;
+    }
+    pairs.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
+  };
+  if (body !== null && typeof body === "object" && !Array.isArray(body)) {
+    for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+      append(key, value);
+    }
+  }
+  return pairs.join("&");
+}
+
 function substitutePathParams(path: string, pathParams: Record<string, string>): string {
   const substituted = path.replace(/\{([^}]+)\}/g, (match, name: string) => {
     const value = pathParams[name];
@@ -726,13 +781,19 @@ export async function executeCall(
 
   const hasBody = request.body !== undefined || request.rawBody !== undefined;
   let serializedBody: string | undefined;
+  let bodyContentType = "application/json";
   if (request.rawBody !== undefined) {
     serializedBody = request.rawBody;
   } else if (request.body !== undefined) {
-    serializedBody = JSON.stringify(request.body);
+    if (selectRequestContentType(operation) === "application/x-www-form-urlencoded") {
+      serializedBody = encodeFormBody(request.body);
+      bodyContentType = "application/x-www-form-urlencoded";
+    } else {
+      serializedBody = JSON.stringify(request.body);
+    }
   }
   if (hasBody && !Object.keys(headers).some((h) => h.toLowerCase() === "content-type")) {
-    headers["Content-Type"] = "application/json";
+    headers["Content-Type"] = bodyContentType;
   }
 
   const reservedRun = reserveRequest(context.policy.budget, context.cwd);
