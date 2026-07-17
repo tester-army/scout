@@ -23,18 +23,18 @@ Scout is the layer between a coding agent and a live API. It gives agents small 
 
 ## Get started - hand this to your agent
 
-Paste this to any coding agent with shell access, fill in the three values, and let it run. Works **with or without** an OpenAPI spec:
+Paste this to any coding agent with shell access, fill in the spec, and let it run (the base URL is read from the spec):
 
 ```text
 Do a deep scan of my API for bugs using scout, a guarded API testing harness.
 
-- Base URL:  <YOUR_BASE_URL>          e.g. https://api.example.com
-- Spec:      <YOUR_SPEC_URL_OR_FILE>  or "none"
-- Auth:      Authorization: Bearer $API_TOKEN   (token stays in that env var)
+- Spec: <YOUR_SPEC_URL_OR_FILE>
+- Auth: Authorization: Bearer $API_TOKEN   (token stays in that env var; omit if public)
+  No spec? Drop it and add: --base-url <YOUR_BASE_URL>
 
-1. Install the skill, then init:
+1. Install the skill, then init (base URL comes from the spec's servers):
      npx @testerarmy/scout@latest agent init
-     npx @testerarmy/scout@latest init <SPEC or omit> --base-url <BASE_URL> --header "Authorization: Bearer $API_TOKEN"
+     npx @testerarmy/scout@latest init <SPEC> --header "Authorization: Bearer $API_TOKEN"
 2. Follow the scout skill to hunt for bugs: sweep for a baseline, then probe
    every reachable endpoint for contract violations, broken error handling,
    auth/tenant leaks, and undocumented behavior. Chase anomalies deeper with
@@ -87,12 +87,12 @@ npx @testerarmy/scout sweep --max-requests 25
 npx @testerarmy/scout report --ci --min-coverage 10
 ```
 
-The base URL defaults to `servers[0].url`. Keep target credentials in environment variables - never in `scout.json`:
+The base URL is read from the spec's `servers[0].url`, so `scout init <spec>` is usually all you need. Pass `--base-url` only to override it, and keep credentials in environment variables - never in `scout.json`:
 
 ```sh
 npx @testerarmy/scout init openapi.json \
-  --base-url https://api.example.com \
-  --header 'Authorization: Bearer $API_TOKEN'
+  --header 'Authorization: Bearer $API_TOKEN' \
+  --base-url https://api.example.com   # optional override
 ```
 
 ## No OpenAPI spec? Explore any base URL
