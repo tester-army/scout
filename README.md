@@ -152,6 +152,30 @@ scout vars --json
 
 `--extract <path>` prints one response value for shell capture (`ID=$(scout call … --extract user.id)`). Captured variables are private to the current run.
 
+## Testing mutations
+
+Write testing (`POST/PUT/PATCH/DELETE`) is **off by default** - the highest-blast-radius guardrail. Enable it only for an API you are authorized to mutate, then drive real user flows: create a resource, use it, and delete it.
+
+```sh
+# opt in (or set policy.allowMutations in scout.json)
+scout init openapi.json --allow-mutations --header 'Authorization: Bearer $API_TOKEN'
+
+# create -> capture the id -> use it -> delete it -> verify it's gone
+scout call POST /users --data '{"name":"scout-test-ada"}' --capture uid=id --json
+scout call GET  /users/{id} --path-param 'id={{uid}}' --expect 200 --json
+scout call DELETE /users/{id} --path-param 'id={{uid}}' --expect 204 --json
+scout call GET  /users/{id} --path-param 'id={{uid}}' --expect 404 --json
+```
+
+Rules for safe mutation testing:
+
+- **Own your data.** Create only clearly-synthetic, uniquely-prefixed resources (e.g. `scout-test-…`). Never mutate resources you did not create, and never use guessed production IDs.
+- **Clean up in reverse.** Record every created ID and delete in reverse dependency order; confirm removal with a read. Stop if cleanup fails and report the leftover IDs.
+- **Scope the blast radius.** Combine `--allow-mutations` with `policy.allowedMethods` / `policy.allowedPaths` and a low `budget` so a misfire stays contained.
+- **Fuzz write bodies.** `scout fuzz POST /users --dry-run` previews malformed/boundary/missing-field cases; run it against owned synthetic resources once mutations are enabled.
+
+For authorization bugs (BOLA/IDOR, tenant isolation), create resources under one identity and attempt cross-identity read/update/delete with another - see [Target identities](#target-identities) below.
+
 ## Target identities
 
 Define named identities in `scout.json`; values may reference environment variables:
