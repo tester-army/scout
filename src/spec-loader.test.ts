@@ -141,6 +141,29 @@ describe("loadSpec", () => {
     });
   });
 
+  it("gives a JSON-Schema-specific hint when handed a schema doc", async () => {
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          $schema: "https://json-schema.org/draft/2020-12/schema",
+          $id: "https://example.com/user.json",
+          type: "object",
+          properties: { id: { type: "string" } },
+        }),
+      );
+    });
+    const port = await listen(server);
+    try {
+      await expect(loadSpec(`http://127.0.0.1:${port}/user.json`)).rejects.toMatchObject({
+        code: "SPEC_INVALID",
+        hint: expect.stringContaining("JSON Schema"),
+      });
+    } finally {
+      await close(server);
+    }
+  });
+
   it("rejects a spec larger than the configured cap, but loads it when raised", async () => {
     // Pad a valid spec past a tiny cap with a large description field.
     const spec = {

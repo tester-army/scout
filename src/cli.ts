@@ -473,6 +473,7 @@ Examples:
     .command("dismiss")
     .description("dismiss a finding so it does not gate reports")
     .argument("<id>", "finding id")
+    .option("--reason <reason>", "why the finding is dismissed (kept in the audit trail)")
     .option("--json", "output as JSON")
     .action(async (id: string, options: FindingLifecycleOptions) => {
       try {
@@ -516,6 +517,11 @@ Examples:
   scout report --json
   scout report --md report.md --json-file report.json
   scout report --ci --severity-threshold high
+
+CI exit codes:
+  0  passed
+  1  findings gate failed (a confirmed finding at/above the severity threshold)
+  3  completeness gate failed (coverage, probes, or sweep incomplete)
 `,
     )
     .action(async (options: ReportOptions) => {

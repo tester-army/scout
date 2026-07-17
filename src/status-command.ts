@@ -17,6 +17,7 @@ interface SessionInfo {
   baseUrl?: string;
   requestsUsed?: number;
   requestBudget?: number;
+  budgetRemaining?: number;
   rateLimit?: number;
   allowMutations?: boolean;
   allowedMethods?: string[];
@@ -41,6 +42,7 @@ function resolveSessionInfo(): SessionInfo {
     ...(projectConfig ? { baseUrl: projectConfig.config.baseUrl } : {}),
     requestsUsed: state.requestCount,
     requestBudget: policy.budget,
+    budgetRemaining: Math.max(0, policy.budget - state.requestCount),
     rateLimit: policy.rateLimit,
     allowMutations: policy.allowMutations,
     ...(policy.allowedMethods ? { allowedMethods: policy.allowedMethods } : {}),
@@ -66,7 +68,9 @@ export async function runStatusCommand(options: StatusCommandOptions = {}): Prom
   printLine(`Run: ${result.session.runId}`);
   printLine(`Spec: ${result.session.specSource}`);
   printLine(`Base URL: ${result.session.baseUrl ?? "unknown"}`);
-  printLine(`Requests used: ${result.session.requestsUsed}/${result.session.requestBudget}`);
+  printLine(
+    `Requests used: ${result.session.requestsUsed}/${result.session.requestBudget} (${result.session.budgetRemaining} remaining)`,
+  );
   printLine(`Rate limit: ${result.session.rateLimit} req/s`);
   printLine(`Mutations: ${result.session.allowMutations ? "allowed" : "blocked"}`);
   if (result.session.allowedMethods) {

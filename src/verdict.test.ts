@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SpecOperation } from "./spec-loader.js";
 import {
   buildVerdict,
+  countUncompilableSchemaOperations,
   mediaTypeMatches,
   selectResponseSpec,
   validateSchemaValue,
@@ -34,6 +35,36 @@ function operation(overrides: Partial<SpecOperation> = {}): SpecOperation {
     ...overrides,
   };
 }
+
+describe("countUncompilableSchemaOperations", () => {
+  it("counts operations whose JSON response schema cannot compile", () => {
+    const good = operation({ path: "/ok" });
+    const bad = operation({
+      path: "/bad",
+      responses: {
+        "200": {
+          description: "bad",
+          content: {
+            // Invalid: `type` must be a string/array, not a number.
+            "application/json": { schema: { type: 42 } as unknown as object },
+          },
+        },
+      },
+    });
+
+    const result = countUncompilableSchemaOperations([good, bad], "3.0.0");
+    expect(result.count).toBe(1);
+    expect(result.operations).toEqual(["GET /bad"]);
+  });
+
+  it("ignores non-JSON and schema-less responses", () => {
+    const op = operation({
+      path: "/text",
+      responses: { "200": { description: "ok", content: { "text/plain": {} } } },
+    });
+    expect(countUncompilableSchemaOperations([op], "3.0.0").count).toBe(0);
+  });
+});
 
 describe("selectResponseSpec", () => {
   it("prefers exact, then wildcard, then default", () => {

@@ -83,6 +83,59 @@ describe("deterministic findings", () => {
     }
   });
 
+  it("collapses the same contract issue across probe kinds (different repro)", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "scout-findings-"));
+    mkdirSync(join(cwd, ".scout"));
+    try {
+      const base = {
+        source: "sweep" as const,
+        severity: "medium" as const,
+        category: "contract-violation" as const,
+        endpoint: "GET /v1/ai-gateway/rules",
+        title: "Undocumented status 404",
+      };
+      // Same finding seen on happy-path, no-auth, invalid-auth probes.
+      const a = createFinding({ ...base, repro: "scout call GET /v1/ai-gateway/rules" });
+      const b = createFinding({ ...base, repro: "scout call GET /v1/ai-gateway/rules --no-auth" });
+      const c = createFinding({
+        ...base,
+        repro: "scout call GET /v1/ai-gateway/rules --invalid-auth",
+      });
+
+      expect(b.id).toBe(a.id);
+      expect(c.id).toBe(a.id);
+      expect(appendFinding(a, cwd).created).toBe(true);
+      expect(appendFinding(b, cwd).created).toBe(false);
+      expect(appendFinding(c, cwd).created).toBe(false);
+      expect(readFindings(cwd)).toHaveLength(1);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("records and clears a dismiss reason across transitions", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "scout-findings-"));
+    mkdirSync(join(cwd, ".scout"));
+    try {
+      const finding = createFinding({
+        source: "sweep",
+        severity: "high",
+        category: "auth",
+        endpoint: "GET /admin",
+        title: "Potential auth bypass",
+      });
+      appendFinding(finding, cwd);
+
+      const dismissed = updateFindingStatus(finding.id, "dismissed", cwd, undefined, "known WIP");
+      expect(dismissed.dismissReason).toBe("known WIP");
+
+      const reconfirmed = updateFindingStatus(finding.id, "confirmed", cwd);
+      expect(reconfirmed.dismissReason).toBeUndefined();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("throws when lifecycle id is unknown", () => {
     const cwd = mkdtempSync(join(tmpdir(), "scout-findings-"));
     mkdirSync(join(cwd, ".scout"));

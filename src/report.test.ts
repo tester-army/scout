@@ -126,6 +126,39 @@ describe("buildReportJson", () => {
     expect(report.coverage).not.toHaveProperty("operations");
   });
 
+  it("assigns distinct CI exit codes for findings vs completeness gates", () => {
+    const base = {
+      title: "API",
+      version: "1.0.0",
+      specSource: "spec.json",
+      coverage,
+      severityThreshold: "high" as const,
+      provenance,
+    };
+
+    // Clean run: pass, exit 0.
+    expect(buildReportJson({ ...base, findings: [] }).summary.ciExitCode).toBe(0);
+
+    // Findings gate fails -> exit 1 (takes precedence).
+    const findingsFail = buildReportJson({ ...base, findings: [finding("critical", "bad")] });
+    expect(findingsFail.summary.findingsGatePassed).toBe(false);
+    expect(findingsFail.summary.ciExitCode).toBe(1);
+
+    // Only completeness fails -> exit 3.
+    const completenessFail = buildReportJson({ ...base, findings: [], minCoverage: 80 });
+    expect(completenessFail.summary.findingsGatePassed).toBe(true);
+    expect(completenessFail.summary.completenessGatePassed).toBe(false);
+    expect(completenessFail.summary.ciExitCode).toBe(3);
+
+    // Both fail -> findings code wins (1).
+    const bothFail = buildReportJson({
+      ...base,
+      findings: [finding("critical", "bad")],
+      minCoverage: 80,
+    });
+    expect(bothFail.summary.ciExitCode).toBe(1);
+  });
+
   it("uses exact coverage for a 100 percent gate", () => {
     const report = buildReportJson({
       title: "API",
