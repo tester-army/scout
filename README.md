@@ -23,28 +23,25 @@ Scout is the layer between a coding agent and a live API. It gives agents small 
 
 ## Get started - hand this to your agent
 
-Paste this to any coding agent with shell access and fill in the three values. It works **with or without** an OpenAPI spec:
+Paste this to any coding agent with shell access, fill in the three values, and let it run. Works **with or without** an OpenAPI spec:
 
 ```text
-Test my API with scout, a guarded API testing harness for coding agents.
+Do a deep scan of my API for bugs using scout, a guarded API testing harness.
 
-- Base URL:     <YOUR_BASE_URL>            e.g. https://api.example.com
-- OpenAPI spec: <YOUR_SPEC_URL_OR_FILE>    or write "none" if you don't have one
-- Auth header:  Authorization: Bearer $API_TOKEN   (keep the token in that env var)
+- Base URL:  <YOUR_BASE_URL>          e.g. https://api.example.com
+- Spec:      <YOUR_SPEC_URL_OR_FILE>  or "none"
+- Auth:      Authorization: Bearer $API_TOKEN   (token stays in that env var)
 
-Do this:
-1. Install the scout skill so you learn the full workflow:
+1. Install the skill, then init:
      npx @testerarmy/scout@latest agent init
-2. Initialize the project:
-     • with a spec: npx @testerarmy/scout@latest init <SPEC> --base-url <BASE_URL> --header "Authorization: Bearer $API_TOKEN"
-     • spec "none": npx @testerarmy/scout@latest init --base-url <BASE_URL> --header "Authorization: Bearer $API_TOKEN"
-3. Follow the scout skill: orient with `endpoints`/`schema` (if a spec is loaded),
-   explore with `scout call` (full response + headers come back), chain requests
-   with `--capture name=path` and `{{name}}`, `scout fuzz` write endpoints, and
-   `scout sweep` for a baseline.
-4. Record issues with `scout finding add`, then produce `scout report`.
+     npx @testerarmy/scout@latest init <SPEC or omit> --base-url <BASE_URL> --header "Authorization: Bearer $API_TOKEN"
+2. Follow the scout skill to hunt for bugs: sweep for a baseline, then probe
+   every reachable endpoint for contract violations, broken error handling,
+   auth/tenant leaks, and undocumented behavior. Chase anomalies deeper with
+   `scout call` and `scout fuzz`.
+3. Record each real bug with `scout finding add`, then `scout report`.
 
-Rules: only test the API above, which I am authorizing. Do NOT send mutations
+Rules: only scan the API above, which I authorize. No mutations
 (POST/PUT/PATCH/DELETE) unless I say so. Clean up anything you create.
 ```
 
