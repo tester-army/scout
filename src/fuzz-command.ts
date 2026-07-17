@@ -97,7 +97,12 @@ export async function runFuzzCommand(
       hint: "Use a smaller synthetic baseline. Scout does not fuzz large request bodies automatically.",
     });
   }
-  const baselineValidation = validateSchemaValue(schema, context.loadedSpec.specVersion, baseline);
+  const baselineValidation = validateSchemaValue(
+    schema,
+    context.loadedSpec.specVersion,
+    baseline,
+    context.loadedSpec.spec.components,
+  );
   if (!baselineValidation) {
     throw new ScoutError("Request schema could not be compiled for fuzzing.", {
       code: "VALIDATION_ERROR",
@@ -113,6 +118,9 @@ export async function runFuzzCommand(
   }
   const planOptions = {
     specVersion: context.loadedSpec.specVersion,
+    ...(context.loadedSpec.spec.components
+      ? { components: context.loadedSpec.spec.components }
+      : {}),
     ...(options.maxCases !== undefined ? { maxCases: options.maxCases } : {}),
     ...(options.oversizedLength !== undefined ? { oversizedLength: options.oversizedLength } : {}),
   };

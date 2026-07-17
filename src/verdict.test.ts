@@ -130,6 +130,74 @@ describe("validateSchemaValue", () => {
     });
   });
 
+  it("resolves circular $refs via spec components", () => {
+    const components = {
+      schemas: {
+        node: {
+          type: "object",
+          required: ["name"],
+          properties: {
+            name: { type: "string", nullable: true },
+            parent: { $ref: "#/components/schemas/node" },
+          },
+        },
+      },
+    };
+    const schema = { $ref: "#/components/schemas/node" };
+    expect(validateSchemaValue(schema, "3.0.3", { name: null }, components)).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(
+      validateSchemaValue(schema, "3.0.3", { name: "a", parent: { name: "b" } }, components),
+    ).toEqual({ valid: true, errors: [] });
+    expect(
+      validateSchemaValue(schema, "3.0.3", { name: "a", parent: {} }, components),
+    ).toMatchObject({
+      valid: false,
+      errors: ["/parent must have required property 'name'"],
+    });
+    expect(validateSchemaValue(schema, "3.0.3", {}, components)).toMatchObject({ valid: false });
+  });
+
+  it("honors nullable beside anyOf (OpenAPI 3.0 without type)", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        address: { nullable: true, anyOf: [{ type: "object" }] },
+      },
+    };
+    expect(validateSchemaValue(schema, "3.0.3", { address: null })).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(validateSchemaValue(schema, "3.0.3", { address: {} })).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(validateSchemaValue(schema, "3.0.3", { address: 5 })).toMatchObject({ valid: false });
+  });
+
+  it("admits null for nullable enums (OpenAPI 3.0)", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        business_type: { type: "string", nullable: true, enum: ["company", "individual"] },
+      },
+    };
+    expect(validateSchemaValue(schema, "3.0.3", { business_type: null })).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(validateSchemaValue(schema, "3.0.3", { business_type: "other" })).toMatchObject({
+      valid: false,
+    });
+  });
+
+  it("returns null for unresolvable $refs without components", () => {
+    expect(validateSchemaValue({ $ref: "#/components/schemas/missing" }, "3.0.3", {})).toBeNull();
+  });
+
   it("annotates oneOf errors with matching branch info", () => {
     const schema = {
       oneOf: [{ type: "object" }, { type: "object", properties: { x: { type: "number" } } }],

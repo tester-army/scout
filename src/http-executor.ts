@@ -856,6 +856,7 @@ export async function executeCall(
   const verdict = buildVerdict({
     operation,
     specVersion: context.loadedSpec.specVersion,
+    components: context.loadedSpec.spec.components,
     status: response.status,
     contentType,
     body,
