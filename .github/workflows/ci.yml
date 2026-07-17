@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # weekly, so upstream spec changes surface even without commits
+    - cron: "0 6 * * 1"
 
 jobs:
   check:
@@ -31,3 +34,31 @@ jobs:
       - run: pnpm build
 
       - run: pnpm smoke:pack
+
+  spec-bench:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Compute cache week
+        id: week
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache bench specs
+        uses: actions/cache@v4
+        with:
+          path: .bench-specs
+          # weekly key: upstream specs are re-downloaded at most once a week
+          key: bench-specs-${{ steps.week.outputs.week }}
+
+      - run: pnpm bench:specs

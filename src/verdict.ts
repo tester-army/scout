@@ -109,10 +109,12 @@ function getAjv(specVersion: string): Ajv {
 }
 
 /**
- * Converts OpenAPI 3.0 `nullable: true` into JSON Schema `type: [..., "null"]`
- * so ajv validates null values the way the spec author intended.
+ * Normalizes an OpenAPI 3.0 schema for ajv: converts `nullable: true` into
+ * JSON Schema null unions (type list, anyOf/oneOf branch, or enum member)
+ * and drops duplicate enum entries, which real-world specs (e.g. Vercel)
+ * contain and ajv rejects as invalid.
  */
-function transformNullable(schema: unknown, memo: Map<object, unknown>): unknown {
+function normalizeSchema(schema: unknown, memo: Map<object, unknown>): unknown {
   if (!schema || typeof schema !== "object") {
     return schema;
   }
@@ -123,14 +125,24 @@ function transformNullable(schema: unknown, memo: Map<object, unknown>): unknown
   if (Array.isArray(schema)) {
     const items: unknown[] = [];
     memo.set(schema, items);
-    for (const item of schema) items.push(transformNullable(item, memo));
+    for (const item of schema) items.push(normalizeSchema(item, memo));
     return items;
   }
 
   const result: Record<string, unknown> = {};
   memo.set(schema, result);
   for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
-    result[key] = transformNullable(value, memo);
+    result[key] = normalizeSchema(value, memo);
+  }
+
+  if (Array.isArray(result.enum)) {
+    const seen = new Set<string>();
+    result.enum = result.enum.filter((value) => {
+      const key = JSON.stringify(value) ?? "undefined";
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   if (result.nullable === true) {
@@ -163,7 +175,7 @@ function prepareComponents(components: object, specVersion: string): unknown {
   if (specVersion.startsWith("3.1")) return components;
   const cached = transformedComponentsCache.get(components);
   if (cached !== undefined) return cached;
-  const transformed = transformNullable(components, new Map());
+  const transformed = normalizeSchema(components, new Map());
   transformedComponentsCache.set(components, transformed);
   return transformed;
 }
@@ -187,7 +199,7 @@ function compileValidator(
   try {
     const prepared = specVersion.startsWith("3.1")
       ? schema
-      : (transformNullable(schema, new Map()) as object);
+      : (normalizeSchema(schema, new Map()) as object);
     const root =
       components && !("components" in prepared)
         ? { ...prepared, components: prepareComponents(components, specVersion) }

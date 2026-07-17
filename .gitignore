@@ -4,3 +4,4 @@ dist/
 *.tgz
 coverage/
 .DS_Store
+.bench-specs/
