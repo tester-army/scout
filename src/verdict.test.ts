@@ -109,6 +109,37 @@ describe("validateSchemaValue", () => {
     });
     expect(validateSchemaValue(false, "3.1.0", null)).toMatchObject({ valid: false });
   });
+
+  it("names the offending property for additionalProperties errors", () => {
+    const schema = {
+      type: "object",
+      additionalProperties: false,
+      properties: { name: { type: "string" } },
+    };
+    expect(validateSchemaValue(schema, "3.1.0", { name: "ok", extra: 1 })).toEqual({
+      valid: false,
+      errors: ["(root) must NOT have additional properties (found: extra)"],
+    });
+  });
+
+  it("lists allowed values for enum errors", () => {
+    const schema = { type: "string", enum: ["a", "b"] };
+    expect(validateSchemaValue(schema, "3.1.0", "c")).toEqual({
+      valid: false,
+      errors: ["(root) must be equal to one of the allowed values (allowed: a, b)"],
+    });
+  });
+
+  it("annotates oneOf errors with matching branch info", () => {
+    const schema = {
+      oneOf: [{ type: "object" }, { type: "object", properties: { x: { type: "number" } } }],
+    };
+    const result = validateSchemaValue(schema, "3.1.0", {});
+    expect(result?.valid).toBe(false);
+    expect(result?.errors).toContain(
+      "(root) must match exactly one schema in oneOf (matched schemas at indexes: 0, 1)",
+    );
+  });
 });
 
 describe("buildVerdict", () => {
