@@ -178,6 +178,12 @@ describe("validateSchemaValue", () => {
     expect(validateSchemaValue(schema, "3.0.3", { address: 5 })).toMatchObject({ valid: false });
   });
 
+  it("drops duplicate enum entries (OpenAPI 3.0)", () => {
+    const schema = { type: "string", enum: ["a", "b", "a"] };
+    expect(validateSchemaValue(schema, "3.0.3", "a")).toEqual({ valid: true, errors: [] });
+    expect(validateSchemaValue(schema, "3.0.3", "c")).toMatchObject({ valid: false });
+  });
+
   it("admits null for nullable enums (OpenAPI 3.0)", () => {
     const schema = {
       type: "object",

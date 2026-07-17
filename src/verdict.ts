@@ -108,11 +108,28 @@ function getAjv(specVersion: string): Ajv {
   return ajv30;
 }
 
+type SchemaTransformOptions = {
+  /** Apply OpenAPI 3.0 → JSON Schema fixups (`nullable`, duplicate enums). */
+  normalize: boolean;
+  /**
+   * When set, rewrites local `#/components/...` refs to point into the
+   * shared components document registered under this `$id`, so ajv compiles
+   * each component schema once instead of once per operation.
+   */
+  refBaseId?: string;
+};
+
 /**
- * Converts OpenAPI 3.0 `nullable: true` into JSON Schema `type: [..., "null"]`
- * so ajv validates null values the way the spec author intended.
+ * Clones a schema for ajv, optionally normalizing OpenAPI 3.0 constructs
+ * (`nullable: true` into JSON Schema null unions; duplicate enum entries,
+ * which real-world specs (e.g. Vercel) contain and ajv rejects as invalid)
+ * and rewriting `#/components/...` refs to a shared registered document.
  */
-function transformNullable(schema: unknown, memo: Map<object, unknown>): unknown {
+function transformSchema(
+  schema: unknown,
+  memo: Map<object, unknown>,
+  options: SchemaTransformOptions,
+): unknown {
   if (!schema || typeof schema !== "object") {
     return schema;
   }
@@ -123,14 +140,37 @@ function transformNullable(schema: unknown, memo: Map<object, unknown>): unknown
   if (Array.isArray(schema)) {
     const items: unknown[] = [];
     memo.set(schema, items);
-    for (const item of schema) items.push(transformNullable(item, memo));
+    for (const item of schema) items.push(transformSchema(item, memo, options));
     return items;
   }
 
   const result: Record<string, unknown> = {};
   memo.set(schema, result);
   for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
-    result[key] = transformNullable(value, memo);
+    if (
+      key === "$ref" &&
+      options.refBaseId !== undefined &&
+      typeof value === "string" &&
+      value.startsWith("#/components/")
+    ) {
+      result[key] = `${options.refBaseId}${value}`;
+      continue;
+    }
+    result[key] = transformSchema(value, memo, options);
+  }
+
+  if (!options.normalize) {
+    return result;
+  }
+
+  if (Array.isArray(result.enum)) {
+    const seen = new Set<string>();
+    result.enum = result.enum.filter((value) => {
+      const key = JSON.stringify(value) ?? "undefined";
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   if (result.nullable === true) {
@@ -157,21 +197,34 @@ function transformNullable(schema: unknown, memo: Map<object, unknown>): unknown
   return result;
 }
 
-const transformedComponentsCache = new WeakMap<object, unknown>();
+const componentsIdCache = new WeakMap<object, string>();
+let componentsIdCounter = 0;
 
-function prepareComponents(components: object, specVersion: string): unknown {
-  if (specVersion.startsWith("3.1")) return components;
-  const cached = transformedComponentsCache.get(components);
-  if (cached !== undefined) return cached;
-  const transformed = transformNullable(components, new Map());
-  transformedComponentsCache.set(components, transformed);
-  return transformed;
+/**
+ * Registers a spec's `components` with the ajv instance once (under a stable
+ * synthetic `$id`) so that every response schema referencing them shares one
+ * compilation of each component schema, instead of ajv recompiling the whole
+ * component graph per operation — prohibitively slow on large specs (Stripe).
+ */
+function registerComponents(ajv: Ajv, components: object, specVersion: string): string {
+  let id = componentsIdCache.get(components);
+  if (id === undefined) {
+    id = `scout://spec-components/${componentsIdCounter++}`;
+    componentsIdCache.set(components, id);
+  }
+  if (!ajv.getSchema(id)) {
+    const prepared = specVersion.startsWith("3.1")
+      ? components
+      : transformSchema(components, new Map(), { normalize: true });
+    ajv.addSchema({ $id: id, components: prepared });
+  }
+  return id;
 }
 
 /**
  * Compiles a response/request schema, resolving any `#/components/...` refs
  * that survive dereferencing (circular refs are intentionally left as `$ref`
- * nodes) by attaching the spec's components to the compiled schema root.
+ * nodes) against the spec's components registered as a shared ajv document.
  */
 function compileValidator(
   schema: object,
@@ -185,14 +238,16 @@ function compileValidator(
 
   let validator: ValidateFunction | null = null;
   try {
-    const prepared = specVersion.startsWith("3.1")
-      ? schema
-      : (transformNullable(schema, new Map()) as object);
-    const root =
-      components && !("components" in prepared)
-        ? { ...prepared, components: prepareComponents(components, specVersion) }
-        : prepared;
-    validator = getAjv(specVersion).compile(root);
+    const ajv = getAjv(specVersion);
+    const refBaseId =
+      components && !("components" in schema)
+        ? registerComponents(ajv, components, specVersion)
+        : undefined;
+    const prepared = transformSchema(schema, new Map(), {
+      normalize: !specVersion.startsWith("3.1"),
+      refBaseId,
+    }) as object;
+    validator = ajv.compile(prepared);
   } catch {
     validator = null;
   }

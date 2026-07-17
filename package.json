@@ -36,7 +36,8 @@
     "test": "vitest run",
     "smoke:pack": "node pack-smoke.mjs",
     "prepack": "pnpm build",
-    "release": "release-it"
+    "release": "release-it",
+    "bench:specs": "node scripts/download-bench-specs.mjs && BENCH_SPECS=1 vitest run src/spec-bench.test.ts"
   },
   "dependencies": {
     "@apidevtools/swagger-parser": "12.1.0",
