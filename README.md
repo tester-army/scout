@@ -26,7 +26,8 @@ Scout is the layer between a coding agent and a live API. It gives agents small 
 Paste this to any coding agent with shell access, fill in the spec, and let it run (the base URL is read from the spec):
 
 ```text
-Do a deep scan of my API for bugs using scout, a guarded API testing harness.
+Test my API for bugs with scout, a guarded API testing harness. Exercise it
+like a real user would, not just read endpoints.
 
 - Spec: <YOUR_SPEC_URL_OR_FILE>
 - Auth: Authorization: Bearer $API_TOKEN   (token stays in that env var; omit if public)
@@ -35,14 +36,17 @@ Do a deep scan of my API for bugs using scout, a guarded API testing harness.
 1. Install the skill, then init (base URL comes from the spec's servers):
      npx @testerarmy/scout@latest agent init
      npx @testerarmy/scout@latest init <SPEC> --header "Authorization: Bearer $API_TOKEN"
-2. Follow the scout skill to hunt for bugs: sweep for a baseline, then probe
-   every reachable endpoint for contract violations, broken error handling,
-   auth/tenant leaks, and undocumented behavior. Chase anomalies deeper with
-   `scout call` and `scout fuzz`.
-3. Record each real bug with `scout finding add`, then `scout report`.
+2. Decide the scope with me first: scout is read-only by default. Ask me whether
+   you may test writes (POST/PUT/PATCH/DELETE). Only if I say yes, re-init with
+   --allow-mutations and use clearly-fake data you create and delete.
+3. Hunt for bugs: sweep for a baseline, then walk real user flows end to end
+   (sign up, create, read, update, delete) and probe for contract violations,
+   broken error handling, auth/tenant leaks (BOLA/IDOR), and undocumented
+   behavior. Chase anomalies deeper with `scout call` and `scout fuzz`.
+4. Record each real bug with `scout finding add`, then `scout report`.
 
-Rules: only scan the API above, which I authorize. No mutations
-(POST/PUT/PATCH/DELETE) unless I say so. Clean up anything you create.
+Rules: only test the API above, which I authorize. Clean up everything you
+create and verify it's gone.
 ```
 
 `scout agent init` only copies the version-matched skill into `.agents/skills/scout/` and adds a discovery note to `AGENTS.md` - no remote installers. Prefer to drive it yourself? See [Quick start](#quick-start) below.
