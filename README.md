@@ -3,86 +3,48 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start"><strong>Quickstart</strong></a> |
-  <a href="#skill"><strong>Skill</strong></a> |
-  <a href="#why-not-just-give-your-agent-curl"><strong>Why scout</strong></a> |
-  <a href="#agent-workflow"><strong>Workflow</strong></a> |
-  <a href="#commands"><strong>Commands</strong></a> |
-  <a href="#findings-and-ci"><strong>Findings &amp; CI</strong></a> |
-  <a href="#safety-model"><strong>Safety</strong></a>
-</p>
-
-<p align="center">
   <a href="https://www.npmjs.com/package/@testerarmy/scout"><img src="https://img.shields.io/npm/v/@testerarmy/scout?logo=npm&color=cb3837" alt="npm version" /></a>
   <a href="https://www.npmjs.com/package/@testerarmy/scout"><img src="https://img.shields.io/npm/dm/@testerarmy/scout?logo=npm" alt="npm downloads" /></a>
   <a href="https://github.com/tester-army/scout/actions/workflows/ci.yml"><img src="https://github.com/tester-army/scout/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license" /></a>
 </p>
 
-Scout is the layer between a coding agent and a live API. It gives agents small OpenAPI views, guarded HTTP execution, deterministic negative probes, request chaining, structured findings, and honest coverage/reporting. It contains no LLM and sends no telemetry.
+Scout is an API testing CLI built for coding agents. It limits requests to a configured host, blocks writes by default, redacts credentials, and records results as structured findings and coverage reports. It contains no LLM and sends no telemetry.
 
-## Get started - hand this to your agent
+## Use Scout with an agent
 
-Paste this to any coding agent with shell access, fill in the spec, and let it run (the base URL is read from the spec):
-
-```text
-Test my API for bugs with scout, a guarded API testing harness. Exercise it
-like a real user would, not just read endpoints.
-
-- Spec: <YOUR_SPEC_URL_OR_FILE>
-- Auth: Authorization: Bearer $API_TOKEN   (token stays in that env var; omit if public)
-  No spec? Drop it and add: --base-url <YOUR_BASE_URL>
-
-1. Install the skill, then init (base URL comes from the spec's servers):
-     npx @testerarmy/scout@latest agent init
-     npx @testerarmy/scout@latest init <SPEC> --header "Authorization: Bearer $API_TOKEN"
-2. Decide the scope with me first: scout is read-only by default. Ask me whether
-   you may test writes (POST/PUT/PATCH/DELETE). Only if I say yes, re-init with
-   --allow-mutations and use clearly-fake data you create and delete.
-3. Hunt for bugs: sweep for a baseline, then walk real user flows end to end
-   (sign up, create, read, update, delete) and probe for contract violations,
-   broken error handling, auth/tenant leaks (BOLA/IDOR), and undocumented
-   behavior. Chase anomalies deeper with `scout call` and `scout fuzz`.
-4. Record each real bug with `scout finding add`, then `scout report`.
-
-Rules: only test the API above, which I authorize. Clean up everything you
-create and verify it's gone.
-```
-
-`scout agent init` only copies the version-matched skill into `.agents/skills/scout/` and adds a discovery note to `AGENTS.md` - no remote installers. Prefer to drive it yourself? See [Quick start](#quick-start) below.
-
-## Skill
-
-Scout ships an [agent skill](./skills/scout/SKILL.md) that teaches your coding agent the authorization-first workflow: obtain scope, orient with `endpoints`/`schema`, build valid controls, run negative probes and fuzzing, validate findings, and report. Install it either way:
+Install the bundled skill in your project:
 
 ```sh
-# bundled, version-matched with the CLI (also writes AGENTS.md discovery hints)
 npx @testerarmy/scout@latest agent init
-
-# or from the open agent skills ecosystem
-npx skills add tester-army/scout
 ```
 
-Both drop the skill into `.agents/skills/scout/` so agents discover it automatically. The skill is the harness manual; you stay the operator who grants scope.
+Then give your agent the following prompt, replacing the spec and authentication details:
 
-## Why not just give your agent `curl`?
+```text
+Test my API for bugs with Scout. Exercise it through realistic user flows,
+not by reviewing endpoints in isolation.
 
-An agent with raw `curl` can hit any host, fire destructive requests, leak secrets into logs, and has to eyeball every response by hand. Scout keeps the agent's autonomy but puts guardrails and structure around it.
+- Spec: <SPEC_URL_OR_FILE>
+- Auth: Authorization: Bearer $API_TOKEN (omit for a public API)
 
-| With raw `curl`                                   | With scout                                                                                                                  |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Hits any host the agent types                     | Locked to the configured base URL host                                                                                      |
-| Mutations (POST/PUT/PATCH/DELETE) fire freely     | Blocked unless you opt in with `allowMutations`                                                                             |
-| No rate limit, no ceiling on volume               | Shared rate limit + atomic per-run request **budget**                                                                       |
-| Secrets end up in argv, shell history, and output | `$VAR` references resolved at request time, redacted everywhere                                                             |
-| Agent reads a raw dump and guesses if it's OK     | Mechanical **verdict**: status vs. documented codes, JSON-schema validation, content-type, latency                          |
-| Full body + headers, or nothing                   | **Full response body and every header** returned, so leaks and undocumented fields are visible - with your secrets stripped |
-| Stateless - re-parse IDs with shell glue          | **Capture** response values and reuse them with `{{interpolation}}`                                                         |
-| Findings live in the chat and vanish              | Structured findings, coverage, and a CI-gating report                                                                       |
+1. Initialize Scout. The base URL comes from the spec:
+   npx @testerarmy/scout@latest init <SPEC> --header "Authorization: Bearer $API_TOKEN"
+2. Ask before testing POST, PUT, PATCH, or DELETE. Only enable mutations after
+   I approve them. Use clearly fake data and remove it when finished.
+3. Run a baseline sweep, then test complete user flows. Check the API contract,
+   error handling, authentication, tenant isolation, and undocumented behavior.
+4. Investigate anomalies with `scout call` and `scout fuzz`.
+5. Record verified bugs with `scout finding add`, then run `scout report`.
 
-Guardrails are not authorization. You still decide what the agent is allowed to touch.
+Only test the API above, which I authorize. Verify that all test data is removed.
+```
+
+`agent init` copies the version-matched [Scout skill](./skills/scout/SKILL.md) to `.agents/skills/scout/` and adds a discovery note to `AGENTS.md`. It does not run a remote installer. You can also install the skill with `npx skills add tester-army/scout`.
 
 ## Quick start
+
+Scout reads the target base URL from `servers[0].url` in the OpenAPI spec:
 
 ```sh
 npx @testerarmy/scout init https://api.example.com/openapi.json
@@ -91,30 +53,26 @@ npx @testerarmy/scout sweep --max-requests 25
 npx @testerarmy/scout report --ci --min-coverage 10
 ```
 
-The base URL is read from the spec's `servers[0].url`, so `scout init <spec>` is usually all you need. Pass `--base-url` only to override it, and keep credentials in environment variables - never in `scout.json`:
+Use `--base-url` to override the spec. Keep credentials in environment variables rather than `scout.json`:
 
 ```sh
 npx @testerarmy/scout init openapi.json \
-  --header 'Authorization: Bearer $API_TOKEN' \
-  --base-url https://api.example.com   # optional override
+  --base-url https://api.example.com \
+  --header 'Authorization: Bearer $API_TOKEN'
 ```
 
-## No OpenAPI spec? Explore any base URL
-
-No spec is required. Point scout at a base URL and it runs in **spec-less mode** - every request is treated as undocumented, but the host lock, mutation gate, rate limit, budget, secret redaction, and 5xx/latency verdicts all still apply. It's a safer, structured `curl`.
+Without an OpenAPI spec, initialize Scout with a base URL:
 
 ```sh
-# no spec argument - just a base URL
 npx @testerarmy/scout init --base-url https://api.example.com \
   --header 'Authorization: Bearer $API_TOKEN'
 
 npx @testerarmy/scout call GET /v1/users --json
-npx @testerarmy/scout call GET /v1/users/42 --extract email
 ```
 
-If you later get a spec, re-run `init` with it (or `--discover --base-url <url>` to probe well-known paths) and you gain endpoint/schema views, coverage, and schema-aware verdicts. If you have a spec but need to hit a path outside it, use `scout call ... --allow-undocumented`.
+Spec-less mode keeps the host lock, mutation gate, rate limit, request budget, secret redaction, and 5xx/latency checks. Endpoint discovery, schema validation, and coverage require a spec. Use `--discover` to check well-known spec paths.
 
-## Agent workflow
+## Workflow
 
 ```text
 init -> endpoints/schema -> sweep --dry-run -> sweep/call/fuzz -> findings -> coverage/report
@@ -129,20 +87,11 @@ scout coverage --json
 scout report --ci --severity-threshold high
 ```
 
-Use `scout reset` to start an isolated run while preserving `scout.json` and the cached spec. Explicit `init` also starts a fresh run and clears requests, findings, variables, and budget usage.
+Use `scout reset` to start a new run while keeping `scout.json` and the cached spec. Running `init` again also starts a new run.
 
-### Exit codes and gating
+### Request chaining
 
-`--expect <status>` only changes the **verdict**; a mismatch does **not** set a non-zero exit code, so a bare `scout call --expect 200` in a shell loop will still exit `0`. To fail on a bad verdict, add `--fail-on-verdict` (exit `1` when the verdict fails), or gate a whole run with `scout report --ci` (exit `1` on confirmed findings, incomplete sweeps, or unmet coverage). Reserve exit `2` for tool/usage errors.
-
-```sh
-scout call GET /users/{id} --path-param id=42 --expect 200 --fail-on-verdict --json
-scout report --ci --severity-threshold high
-```
-
-## Request chaining
-
-No shell glue needed to thread values between calls:
+Capture a value from one response and use it in later requests:
 
 ```sh
 scout call POST /users --data '{"name":"Ada"}' --capture userId=user.id --json
@@ -150,35 +99,27 @@ scout call GET /users/{id} --path-param 'id={{userId}}' --json
 scout vars --json
 ```
 
-`--extract <path>` prints one response value for shell capture (`ID=$(scout call … --extract user.id)`). Captured variables are private to the current run.
+`--extract <path>` prints a single value for shell use, for example `ID=$(scout call ... --extract user.id)`. Captured variables only exist for the current run.
 
-## Testing mutations
+### Testing writes
 
-Write testing (`POST/PUT/PATCH/DELETE`) is **off by default** - the highest-blast-radius guardrail. Enable it only for an API you are authorized to mutate, then drive real user flows: create a resource, use it, and delete it.
+`POST`, `PUT`, `PATCH`, and `DELETE` are blocked by default. Enable them only when you are authorized to change the target API:
 
 ```sh
-# opt in (or set policy.allowMutations in scout.json)
-scout init openapi.json --allow-mutations --header 'Authorization: Bearer $API_TOKEN'
+scout init openapi.json --allow-mutations \
+  --header 'Authorization: Bearer $API_TOKEN'
 
-# create -> capture the id -> use it -> delete it -> verify it's gone
 scout call POST /users --data '{"name":"scout-test-ada"}' --capture uid=id --json
-scout call GET  /users/{id} --path-param 'id={{uid}}' --expect 200 --json
+scout call GET /users/{id} --path-param 'id={{uid}}' --expect 200 --json
 scout call DELETE /users/{id} --path-param 'id={{uid}}' --expect 204 --json
-scout call GET  /users/{id} --path-param 'id={{uid}}' --expect 404 --json
+scout call GET /users/{id} --path-param 'id={{uid}}' --expect 404 --json
 ```
 
-Rules for safe mutation testing:
+Create only clearly named test data. Track every created resource, delete it in reverse dependency order, and verify removal. Restrict mutation tests further with `allowedMethods`, `allowedPaths`, and a low request budget.
 
-- **Own your data.** Create only clearly-synthetic, uniquely-prefixed resources (e.g. `scout-test-…`). Never mutate resources you did not create, and never use guessed production IDs.
-- **Clean up in reverse.** Record every created ID and delete in reverse dependency order; confirm removal with a read. Stop if cleanup fails and report the leftover IDs.
-- **Scope the blast radius.** Combine `--allow-mutations` with `policy.allowedMethods` / `policy.allowedPaths` and a low `budget` so a misfire stays contained.
-- **Fuzz write bodies.** `scout fuzz POST /users --dry-run` previews malformed/boundary/missing-field cases; run it against owned synthetic resources once mutations are enabled.
+### Multiple identities
 
-For authorization bugs (BOLA/IDOR, tenant isolation), create resources under one identity and attempt cross-identity read/update/delete with another - see [Target identities](#target-identities) below.
-
-## Target identities
-
-Define named identities in `scout.json`; values may reference environment variables:
+Define authentication profiles in `scout.json` when testing roles or tenant isolation:
 
 ```json
 {
@@ -201,22 +142,23 @@ Define named identities in `scout.json`; values may reference environment variab
 }
 ```
 
-Select one with `--auth-profile admin` on `call`, `sweep`, or `fuzz`. (`spec` may be omitted for spec-less mode.)
+Pass `--auth-profile admin` to `call`, `sweep`, or `fuzz`.
 
-Policy knobs (all optional; shown with their defaults):
+## Configuration
 
-| Key                               | Default | Meaning                                                                                                                                               |
-| --------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rateLimit`                       | `5`     | Max **requests per second** to the target, shared across every command in a run.                                                                      |
-| `budget`                          | `300`   | Max **total requests per run** (cumulative across every `call`/`sweep`/`fuzz`, not per command). Resets on `scout reset` or an explicit `scout init`. |
-| `allowMutations`                  | `false` | Permit `POST/PUT/PATCH/DELETE`.                                                                                                                       |
-| `allowedMethods` / `allowedPaths` | unset   | Restrict every request to these methods / path globs.                                                                                                 |
+| Policy           | Default | Description                                                       |
+| ---------------- | ------- | ----------------------------------------------------------------- |
+| `rateLimit`      | `5`     | Maximum requests per second, shared by all commands in a run      |
+| `budget`         | `300`   | Maximum requests in a run; reset by `scout reset` or `scout init` |
+| `allowMutations` | `false` | Allows `POST`, `PUT`, `PATCH`, and `DELETE`                       |
+| `allowedMethods` | unset   | Restricts requests to selected HTTP methods                       |
+| `allowedPaths`   | unset   | Restricts requests to selected path globs                         |
 
-Because `budget` is per-run and cumulative, a `sweep` after some manual `call`s draws from the same ceiling — check `scout status` to see remaining budget.
+Run `scout status` to inspect the active policy and remaining request budget.
 
 ## Findings and CI
 
-Fuzz findings may begin as candidates. Validate them before gating:
+Fuzzing can produce candidate findings. Confirm or dismiss each candidate before using it as a CI gate:
 
 ```sh
 scout finding list --json
@@ -225,43 +167,58 @@ scout finding dismiss <id> --json
 scout report --ci --min-coverage 20 --require-probes
 ```
 
-`report --ci` defaults to 100% operation coverage and fails on confirmed findings at the configured severity, incomplete sweeps, unmet coverage, or missing required probes. Override with `--min-coverage` when a narrower scope is intentional. Candidate and dismissed findings do not gate.
+`report --ci` fails for confirmed findings at the configured severity, incomplete sweeps, insufficient coverage, or missing required probes. Its default operation coverage threshold is 100%; use `--min-coverage` when you intentionally test a narrower scope. Candidate and dismissed findings do not fail CI.
 
-## Safety model
+`--expect <status>` affects the request verdict but not the process exit code. Add `--fail-on-verdict` to exit with code `1` when the verdict fails:
 
-- Requests are restricted to the configured base URL host.
-- Undocumented method/path pairs are rejected unless `--allow-undocumented` is set - or the project is spec-less, where every path is treated as undocumented but all other guardrails remain.
-- Mutations are blocked unless `policy.allowMutations` is enabled.
-- Optional method and path scopes constrain every request.
-- Every target request shares the configured rate limit and atomic run budget.
-- Redirects are not followed by target calls; spec redirects cannot cross hosts.
-- Remote external `$ref`s are disabled; spec downloads are time and size limited (25 MiB default; raise with `scout init --max-spec-mb <n>`, hard ceiling 100 MiB).
-- Response downloads are capped at 1 MiB and surfaced as bounded previews.
-- Credential values are redacted while cookie names and security attributes remain inspectable.
+```sh
+scout call GET /users/{id} \
+  --path-param id=42 \
+  --expect 200 \
+  --fail-on-verdict \
+  --json
+```
 
-Guardrails do not grant authorization. Confirm the environment, host, operations, methods, identities, data, rate, budget, and test window before sending traffic.
+Exit code `2` is reserved for usage and tool errors.
+
+## Guardrails
+
+- Requests are limited to the configured base URL host.
+- Undocumented operations require `--allow-undocumented`, except in spec-less mode.
+- Mutations require explicit opt-in.
+- Method and path scopes can restrict every request.
+- Rate limits and request budgets apply across the whole run.
+- Target requests do not follow redirects; spec redirects cannot change hosts.
+- Remote external `$ref` values are disabled.
+- Spec downloads default to a 25 MiB limit and cannot exceed 100 MiB.
+- Response downloads are capped at 1 MiB and returned as bounded previews.
+- Credentials are resolved from environment variables at request time and redacted from output.
+
+These guardrails do not replace authorization. Confirm the environment, host, methods, identities, test data, rate, budget, and testing window before sending traffic.
 
 ## Commands
 
-| Command                        | Purpose                                                                     |
-| ------------------------------ | --------------------------------------------------------------------------- |
-| `scout init [spec]`            | Cache OpenAPI (or go spec-less with `--base-url`) and start an isolated run |
-| `scout status`                 | Show local project, policy, and run state                                   |
-| `scout reset`                  | Start a clean run with the current config/spec                              |
-| `scout endpoints`              | Search a compact endpoint index                                             |
-| `scout schema <method> <path>` | Show one operation's schema                                                 |
-| `scout call <method> <path>`   | Execute one request; return full response, headers, and a verdict           |
-| `scout vars`                   | List or clear captured run variables                                        |
-| `scout sweep`                  | Plan or execute a deterministic read-oriented baseline                      |
-| `scout fuzz <method> <path>`   | Plan or execute request-body negative cases                                 |
-| `scout coverage`               | Show operation-level exercised/validated coverage                           |
-| `scout finding`                | Add, list, confirm, or dismiss findings                                     |
-| `scout report`                 | Produce summary-first JSON/Markdown and CI gates                            |
-| `scout agent init`             | Install the bundled skill and AGENTS.md hints                               |
+| Command                        | Purpose                                                                       |
+| ------------------------------ | ----------------------------------------------------------------------------- |
+| `scout init [spec]`            | Cache an OpenAPI spec and start a run, or use `--base-url` for spec-less mode |
+| `scout status`                 | Show the project, policy, and run state                                       |
+| `scout reset`                  | Start a run with the current configuration and spec                           |
+| `scout endpoints`              | Search the endpoint index                                                     |
+| `scout schema <method> <path>` | Show one operation's schema                                                   |
+| `scout call <method> <path>`   | Send one request and return its response and verdict                          |
+| `scout vars`                   | List or clear captured variables                                              |
+| `scout sweep`                  | Plan or run a read-oriented baseline                                          |
+| `scout fuzz <method> <path>`   | Plan or run request-body negative cases                                       |
+| `scout coverage`               | Show operation coverage                                                       |
+| `scout finding`                | Add, list, confirm, or dismiss findings                                       |
+| `scout report`                 | Create JSON or Markdown reports and CI gates                                  |
+| `scout agent init`             | Install the bundled agent skill                                               |
 
-Run `scout <command> --help` for flags. Machine-readable commands support `--json`; non-interactive output defaults to JSON automatically.
+Run `scout <command> --help` for all options. Commands support `--json`; non-interactive output uses JSON by default.
 
 ## Development
+
+Requires Node.js 22.12.0 or newer and pnpm.
 
 ```sh
 pnpm install
@@ -271,8 +228,6 @@ pnpm typecheck
 pnpm build
 ```
 
-Requires Node >=22.12.0.
-
 ## License
 
-[MIT](./LICENSE) (c) Tester Army
+[MIT](./LICENSE) (c) TesterArmy, Inc.
