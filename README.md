@@ -231,3 +231,7 @@ pnpm build
 ## License
 
 [MIT](./LICENSE) (c) TesterArmy, Inc.
+
+---
+
+Made at [TesterArmy](https://tester.army). Scout is open source and MIT licensed. Looking for an agentic testing tool that automates your QA process? Check out [TesterArmy](https://tester.army).
