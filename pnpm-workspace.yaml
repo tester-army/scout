@@ -44,3 +44,9 @@ minimumReleaseAgeExclude:
 
 onlyBuiltDependencies:
   - esbuild
+
+overrides:
+  "fast-uri@>=3.0.0 <3.1.6": 3.1.6
+  "ip-address@<=10.3.0": 10.3.1
+  "js-yaml@>=4.0.0 <4.3.2": 4.3.2
+  "undici@>=7.0.0 <7.29.0": 7.29.0
