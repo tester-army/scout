@@ -67,11 +67,39 @@ describe("redactUrl", () => {
       "https://api.example.com/v1/x?monkey=banana",
     );
   });
+
+  it("masks camelCase secret-ish query param values", () => {
+    const out = redactUrl(
+      "https://api.example.com/v1/x?accessToken=t1&clientSecret=s2&authToken=a3&apiKey=k4&page=2",
+      [],
+    );
+    for (const value of ["t1", "s2", "a3", "k4"]) expect(out).not.toContain(`=${value}`);
+    expect(out).toContain("accessToken=%5Bredacted%5D");
+    expect(out).toContain("page=2");
+  });
+
+  it("preserves benign camelCase query names", () => {
+    expect(redactUrl("https://api.example.com/v1/x?monkeyId=1&authorId=2", [])).toBe(
+      "https://api.example.com/v1/x?monkeyId=1&authorId=2",
+    );
+  });
+
+  it("strips userinfo credentials", () => {
+    expect(redactUrl("https://admin:hunter2@api.example.com/v1/x", [])).toBe(
+      "https://api.example.com/v1/x",
+    );
+  });
 });
 
 describe("redactMessage", () => {
   it("still strips query strings for surfaced error messages", () => {
     expect(redactMessage("failed https://api.example.com/x?secret=1", [])).toBe(
+      "failed https://api.example.com/x",
+    );
+  });
+
+  it("strips userinfo credentials from surfaced URLs", () => {
+    expect(redactMessage("failed https://admin:hunter2@api.example.com/x", [])).toBe(
       "failed https://api.example.com/x",
     );
   });

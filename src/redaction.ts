@@ -2,6 +2,17 @@ const URL_WITH_QUERY_RE = /\bhttps?:\/\/[^\s"'<>]+/gi;
 const SECRETISH_QUERY_KEY_RE =
   /(^|[-_])(api[-_]?key|key|token|secret|password|session|auth|signature|sig)([-_]|$)/i;
 
+const CAMEL_CASE_BOUNDARY_RE = /([a-z0-9])([A-Z])/g;
+
+/**
+ * Tests a header, query, or body key against a secret-ish name pattern, also
+ * splitting camelCase so `accessToken` and `clientSecret` match like
+ * `access_token` and `client_secret`.
+ */
+export function isSecretishName(name: string, pattern: RegExp): boolean {
+  return pattern.test(name) || pattern.test(name.replace(CAMEL_CASE_BOUNDARY_RE, "$1_$2"));
+}
+
 /** Replaces exact resolved-secret values with a placeholder. */
 export function redactSecretsOnly(text: string, secrets: Array<string | undefined>): string {
   let redacted = text;
@@ -30,9 +41,9 @@ export function redactJsonSecrets(value: unknown, secrets: Array<string | undefi
 }
 
 /**
- * Redacts a URL for the evidence log: masks resolved secrets and the values
- * of declared or secret-ish query parameters, but preserves the path and
- * non-secret query params so repros stay meaningful.
+ * Redacts a URL for the evidence log: masks resolved secrets, userinfo
+ * credentials, and the values of declared or secret-ish query parameters, but
+ * preserves the path and non-secret query params so repros stay meaningful.
  */
 export function redactUrl(
   rawUrl: string,
@@ -44,10 +55,12 @@ export function redactUrl(
     const url = new URL(secretRedacted);
     const credentialKeys = new Set(credentialQueryKeys);
     for (const key of [...url.searchParams.keys()]) {
-      if (credentialKeys.has(key) || SECRETISH_QUERY_KEY_RE.test(key)) {
+      if (credentialKeys.has(key) || isSecretishName(key, SECRETISH_QUERY_KEY_RE)) {
         url.searchParams.set(key, "[redacted]");
       }
     }
+    url.username = "";
+    url.password = "";
     url.hash = "";
     return url.toString();
   } catch {
@@ -55,13 +68,15 @@ export function redactUrl(
   }
 }
 
-/** Redacts exact secrets and strips query strings from surfaced URLs. */
+/** Redacts exact secrets and strips userinfo and query strings from surfaced URLs. */
 export function redactMessage(message: string, secrets: Array<string | undefined>): string {
   const redacted = redactSecretsOnly(message, secrets);
 
   return redacted.replace(URL_WITH_QUERY_RE, (candidate) => {
     try {
       const url = new URL(candidate);
+      url.username = "";
+      url.password = "";
       url.search = "";
       url.hash = "";
       return url.toString();
