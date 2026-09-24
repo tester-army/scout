@@ -13,6 +13,7 @@ import {
   type ScoutProjectConfig,
 } from "./project-config.js";
 import {
+  isSecretishName,
   looksLikeUnredactedSecret,
   redactJsonSecrets,
   redactSecretsOnly,
@@ -434,7 +435,11 @@ function collectSecretishBodyValues(
     return;
   }
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (SECRETISH_BODY_KEY_RE.test(key) && typeof item === "string" && item.length >= 4) {
+    if (
+      isSecretishName(key, SECRETISH_BODY_KEY_RE) &&
+      typeof item === "string" &&
+      item.length >= 4
+    ) {
       secrets.push(item);
     }
     collectSecretishBodyValues(item, secrets, seen);
@@ -520,7 +525,7 @@ function collectResponseHeaders(
 ): Record<string, string> {
   const result: Record<string, string> = {};
   responseHeaders.forEach((value, name) => {
-    result[name] = SECRETISH_HEADER_RE.test(name)
+    result[name] = isSecretishName(name, SECRETISH_HEADER_RE)
       ? "[redacted]"
       : redactSecretsOnly(value, secrets);
   });
@@ -612,13 +617,13 @@ export async function executeCall(
     hasDeclaredAuthParameters ? isDeclaredCredentialHeader(name) : SECRETISH_HEADER_RE.test(name);
   /** Matches a credential header that must be redacted. */
   const isSensitiveHeader = (name: string) =>
-    authHeaderNames.has(name.toLowerCase()) || SECRETISH_HEADER_RE.test(name);
+    authHeaderNames.has(name.toLowerCase()) || isSecretishName(name, SECRETISH_HEADER_RE);
   /** Matches a credential query parameter for probe mutation. */
   const isProbeCredentialQuery = (name: string) =>
     hasDeclaredAuthParameters ? authQueryNames.has(name) : SECRETISH_QUERY_KEY_RE.test(name);
   /** Matches a credential query parameter that must be redacted. */
   const isSensitiveQuery = (name: string) =>
-    authQueryNames.has(name) || SECRETISH_QUERY_KEY_RE.test(name);
+    authQueryNames.has(name) || isSecretishName(name, SECRETISH_QUERY_KEY_RE);
 
   const pathParams = { ...(match?.extractedPathParams ?? {}), ...(request.pathParams ?? {}) };
   const templatePath = operation && match ? operation.path : request.path;
