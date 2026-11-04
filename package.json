@@ -48,7 +48,7 @@
     "picomatch": "4.0.5",
     "swagger2openapi": "7.0.8",
     "table": "6.9.0",
-    "zod": "4.4.3"
+    "zod": "4.6.6"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",
